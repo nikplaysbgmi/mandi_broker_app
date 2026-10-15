@@ -46,3 +46,8 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+serviceAccountKey.json
+scripts/ncdex_updater/serviceAccountKey.json
+scripts/ncdex_updater/node_modules/
+node_modules/

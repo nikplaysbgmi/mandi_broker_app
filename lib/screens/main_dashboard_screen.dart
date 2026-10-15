@@ -1,18 +1,23 @@
-import '../services/mandi_services.dart';
 import 'dart:math';
+
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import '../services/email_service.dart';
+import 'package:url_launcher/url_launcher.dart';
+
 import '../models/mandi_models.dart';
 import '../services/cloud_sync_service.dart';
-import 'buyer_portal_screen.dart';
-import 'seller_portal_screen.dart';
+import '../services/email_service.dart';
+import '../services/mandi_services.dart';
+import 'bill_generator_screen.dart';
 import 'broker_portal_screen.dart';
+import 'buyer_portal_screen.dart';
+import 'contact_services_screen.dart';
 import 'market_watch_screen.dart';
+import 'seller_portal_screen.dart';
 
 // =============================================================
-// MAIN 5-SECTION DASHBOARD
+// MAIN 6-SECTION DASHBOARD
 // =============================================================
 class MainDashboardScreen extends StatefulWidget {
   const MainDashboardScreen({super.key});
@@ -25,12 +30,12 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   @override
   void initState() {
     super.initState();
-    // Guarantee auth token existence as soon as dashboard displays
     _initializeAuth();
 
-    // Check for app updates via Firestore version control
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      AppUpdateService.checkForUpdates(context);
+      if (mounted) {
+        AppUpdateService.checkForUpdates(context);
+      }
     });
   }
 
@@ -51,17 +56,17 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         title: const Row(
           children: [
-            Icon(Icons.lock_clock_rounded, color: Colors.orange),
+            Icon(Icons.info_outline, color: Colors.orange),
             SizedBox(width: 8),
             Text(
-              'Under Maintenance',
+              'Notice',
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
             ),
           ],
         ),
-        content: Text(
-          '$sectionTitle is temporarily locked for maintenance. Please use the Broker Portal.',
-          style: const TextStyle(fontSize: 13),
+        content: const Text(
+          'This service is permanently closed, so please use other service.',
+          style: TextStyle(fontSize: 13),
         ),
         actions: [
           ElevatedButton(
@@ -88,7 +93,11 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       } else if (sectionName == 'SELLER') {
         portal = SellerSectionPortal(user: existingUser);
       } else {
-        portal = BillGeneratorSectionPortal(username: existingUser.name);
+        final isUnlocked =
+            StorageService.get('session_BILL_GENERATOR_UNLOCKED') == 'true';
+        portal = isUnlocked
+            ? BillGeneratorSectionPortal(username: existingUser.name)
+            : BillGeneratorMaintenanceScreen(username: existingUser.name);
       }
       Navigator.push(context, MaterialPageRoute(builder: (context) => portal));
       return;
@@ -98,6 +107,239 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => SectionLoginGate(sectionName: sectionName),
+      ),
+    );
+  }
+
+  void _openMainMenuProfileDialog() {
+    final allAccounts = AccountService.getAllAccounts();
+    final brokerUser = AccountService.getSessionUser('BROKER');
+    final buyerUser = AccountService.getSessionUser('BUYER');
+    final sellerUser = AccountService.getSessionUser('SELLER');
+    final billUser = AccountService.getSessionUser('BILL GENERATOR');
+
+    final activeUser = brokerUser ?? buyerUser ?? sellerUser ?? billUser;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.account_circle, color: Color(0xFF14B8A6), size: 28),
+            SizedBox(width: 10),
+            Text(
+              'User Profile & Accounts',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (activeUser != null) ...[
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF14B8A6).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: const Color(0xFF14B8A6).withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          CircleAvatar(
+                            radius: 18,
+                            backgroundColor: const Color(0xFF14B8A6),
+                            child: Text(
+                              activeUser.name.isNotEmpty
+                                  ? activeUser.name[0].toUpperCase()
+                                  : 'U',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  activeUser.name,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                Text(
+                                  activeUser.section.toUpperCase(),
+                                  style: const TextStyle(
+                                    color: Color(0xFF0F766E),
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const Divider(height: 18),
+                      Text(
+                        'Mobile: ${activeUser.mobile}',
+                        style: const TextStyle(fontSize: 12.5),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        'Email: ${activeUser.email.isNotEmpty ? activeUser.email : "Not Provided"}',
+                        style: const TextStyle(fontSize: 12.5),
+                      ),
+                      if (activeUser.address.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        Text(
+                          'Address: ${activeUser.address}',
+                          style: const TextStyle(fontSize: 12.5),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red.shade600,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  onPressed: () {
+                    for (final sec in [
+                      'BROKER',
+                      'BUYER',
+                      'SELLER',
+                      'BILL GENERATOR'
+                    ]) {
+                      StorageService.remove('session_$sec');
+                      StorageService.remove('session_${sec}_name');
+                      StorageService.remove('session_${sec}_mobile');
+                      StorageService.remove('session_${sec}_email');
+                      StorageService.remove('session_${sec}_address');
+                    }
+                    StorageService.remove('session_BILL_GENERATOR_UNLOCKED');
+                    Navigator.pop(ctx);
+                    if (mounted) setState(() {});
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content:
+                            Text('Logged out of active session successfully.'),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.logout, size: 16),
+                  label: const Text('LOGOUT ACTIVE SESSION'),
+                ),
+              ] else ...[
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: const Column(
+                    children: [
+                      Icon(Icons.person_outline, size: 36, color: Colors.grey),
+                      SizedBox(height: 8),
+                      Text(
+                        'No Active User Logged In',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
+                      SizedBox(height: 4),
+                      Text(
+                        'Tap any of the portal cards to sign in to your account.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 12, color: Colors.black54),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              if (allAccounts.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                const Text(
+                  'Saved Device Accounts:',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+                const SizedBox(height: 6),
+                ...allAccounts.map((acc) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _routeToSection(context, acc.section.toUpperCase());
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    acc.name,
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12.5),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  Text(
+                                    '${acc.section} • ${acc.mobile}',
+                                    style: const TextStyle(
+                                        fontSize: 11, color: Colors.black54),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const Icon(Icons.chevron_right,
+                                size: 16, color: Colors.grey),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('CLOSE'),
+          ),
+        ],
       ),
     );
   }
@@ -118,13 +360,11 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           child: StreamBuilder<Map<String, dynamic>>(
             stream: CloudSyncService.streamServiceSwitches(),
             builder: (context, snapshot) {
-              final config = snapshot.data ?? {};
+              final config = snapshot.data ?? const {};
 
-              // Real-time remote toggles from Firebase (defaults to true if not configured)
               final bool enableMarketView = config['market_view'] ?? true;
               final bool enableBuyerPortal = config['buyer_portal'] ?? true;
               final bool enableSellerPortal = config['seller_portal'] ?? true;
-              final bool enableBillGenerator = config['bill_generator'] ?? true;
 
               return Center(
                 child: SingleChildScrollView(
@@ -137,40 +377,56 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 6,
-                          ),
-                          decoration: BoxDecoration(
-                            color:
-                                const Color(0xFF10B981).withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: const Color(0xFF10B981)
-                                  .withValues(alpha: 0.35),
-                            ),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.verified,
-                                size: 14,
-                                color: Color(0xFF10B981),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
                               ),
-                              SizedBox(width: 6),
-                              Text(
-                                'APMC • E-MANDI TRADE NETWORK',
-                                style: TextStyle(
-                                  color: Color(0xFF10B981),
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                  letterSpacing: 0.8,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF10B981)
+                                    .withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: const Color(0xFF10B981)
+                                      .withValues(alpha: 0.35),
                                 ),
                               ),
-                            ],
-                          ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.verified,
+                                    size: 13,
+                                    color: Color(0xFF10B981),
+                                  ),
+                                  SizedBox(width: 5),
+                                  Text(
+                                    'APMC • E-MANDI NETWORK',
+                                    style: TextStyle(
+                                      color: Color(0xFF10B981),
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: 0.7,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            IconButton.filledTonal(
+                              style: IconButton.styleFrom(
+                                backgroundColor: const Color(0xFF14B8A6)
+                                    .withValues(alpha: 0.15),
+                                foregroundColor: const Color(0xFF14B8A6),
+                              ),
+                              icon: const Icon(Icons.account_circle_outlined,
+                                  size: 22),
+                              tooltip: 'User Profile & Settings',
+                              onPressed: _openMainMenuProfileDialog,
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 10),
                         const Text(
@@ -297,23 +553,37 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                           context: context,
                           title: 'BILL GENERATOR',
                           hindiTitle: 'बिल एवं पर्चा जनरेटर',
-                          description: enableBillGenerator
-                              ? 'A4 print generation, statements & cess bills'
-                              : 'Bills accessible directly inside Broker Ledger',
+                          description:
+                              'Farmer mandi slips, weight tally & statement print',
                           icon: Icons.receipt_long_rounded,
-                          accentColor: enableBillGenerator
-                              ? const Color(0xFFA855F7)
-                              : Colors.grey,
-                          badgeText: enableBillGenerator
-                              ? 'SECURE LOGIN'
-                              : 'LOCKED 🔒',
+                          accentColor: const Color(0xFFA855F7),
+                          badgeText: 'SECURE DESK',
                           isPublic: false,
+                          onTap: () =>
+                              _routeToSection(context, 'BILL GENERATOR'),
+                        ),
+                        const SizedBox(height: 12),
+
+                        // 6. CONTACT US & SERVICES
+                        _buildSectionCard(
+                          context: context,
+                          title: 'CONTACT US & SERVICES',
+                          hindiTitle:
+                              'सहायता, सब्सक्रिप्शन, विज्ञापन व WhatsApp रीसेट',
+                          description:
+                              'Promotion banner, WhatsApp password reset, subscription & live help',
+                          icon: Icons.support_agent_rounded,
+                          accentColor: const Color(0xFF06B6D4),
+                          badgeText: 'SUPPORT HUB',
+                          isPublic: true,
                           onTap: () {
-                            if (enableBillGenerator) {
-                              _routeToSection(context, 'BILL GENERATOR');
-                            } else {
-                              _showLockedNotice(context, 'Bill Generator');
-                            }
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) =>
+                                    const ContactServicesScreen(),
+                              ),
+                            );
                           },
                         ),
                         const SizedBox(height: 20),
@@ -473,7 +743,223 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 }
 
 // =============================================================
-// LOGIN GATE WITH APP NAME ON GMAIL OTP
+// BILL GENERATOR MAINTENANCE SCREEN (7-TAP SECRET BYPASS)
+// =============================================================
+class BillGeneratorMaintenanceScreen extends StatefulWidget {
+  final String username;
+
+  const BillGeneratorMaintenanceScreen({super.key, required this.username});
+
+  @override
+  State<BillGeneratorMaintenanceScreen> createState() =>
+      _BillGeneratorMaintenanceScreenState();
+}
+
+class _BillGeneratorMaintenanceScreenState
+    extends State<BillGeneratorMaintenanceScreen> {
+  int _secretTapCount = 0;
+
+  void _showHiddenAccessDialog() {
+    final keyController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.vpn_key_rounded, color: Color(0xFFA855F7)),
+            SizedBox(width: 10),
+            Text(
+              'Admin Bypass Access',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter the administrator bypass key to access the Bill Generator:',
+              style: TextStyle(fontSize: 13, color: Colors.black87),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: keyController,
+              obscureText: true,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(
+                labelText: 'Master Security Key',
+                prefixIcon: Icon(Icons.shield_outlined),
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('CANCEL'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFA855F7),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              final entered = keyController.text.trim();
+              if (entered == '2850') {
+                Navigator.pop(ctx);
+                StorageService.save('session_BILL_GENERATOR_UNLOCKED', 'true');
+                Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => BillGeneratorSectionPortal(
+                      username: widget.username,
+                    ),
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Invalid Master Key!'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
+            },
+            child: const Text('BYPASS & ENTER'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0B1320),
+      appBar: AppBar(
+        title: const Text('BILL GENERATOR'),
+        backgroundColor: const Color(0xFF16253B),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            tooltip: 'Logout',
+            onPressed: () {
+              StorageService.remove('session_BILL GENERATOR');
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const MainDashboardScreen(),
+                ),
+                (route) => false,
+              );
+            },
+          ),
+        ],
+      ),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 460),
+            padding: const EdgeInsets.all(28),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: const [
+                BoxShadow(
+                  color: Colors.black45,
+                  blurRadius: 18,
+                  offset: Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                GestureDetector(
+                  onTap: () {
+                    _secretTapCount++;
+                    if (_secretTapCount >= 7) {
+                      _secretTapCount = 0;
+                      _showHiddenAccessDialog();
+                    }
+                  },
+                  child: CircleAvatar(
+                    radius: 36,
+                    backgroundColor: Colors.orange.withValues(alpha: 0.15),
+                    child: const Icon(
+                      Icons.build_circle_outlined,
+                      size: 44,
+                      color: Colors.orange,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                const Text(
+                  'SYSTEM UNDER MAINTENANCE',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'User: ${widget.username}',
+                  style: const TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+                const SizedBox(height: 14),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.amber.shade300),
+                  ),
+                  child: const Text(
+                    'This service is permanently closed, so please use other service.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.brown,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0F766E),
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size.fromHeight(44),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.arrow_back),
+                  label: const Text('BACK TO DASHBOARD'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================
+// LOGIN GATE WITH REAL-TIME CLOUD CREDENTIAL VALIDATION
 // =============================================================
 class SectionLoginGate extends StatefulWidget {
   final String sectionName;
@@ -490,6 +976,8 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
   bool _obscurePin = true;
   bool _isLoading = false;
 
+  static const String adminSupportPhone = '+919876543210';
+
   @override
   void initState() {
     super.initState();
@@ -501,6 +989,36 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
     }
   }
 
+  @override
+  void dispose() {
+    _mobileController.dispose();
+    _pinController.dispose();
+    super.dispose();
+  }
+
+  void _requestPasswordResetViaWhatsApp() async {
+    final cleanPhone = adminSupportPhone.replaceAll(RegExp(r'[^0-9]'), '');
+    final enteredMobile = _mobileController.text.trim();
+
+    final message = enteredMobile.isNotEmpty
+        ? 'नमस्ते Mandi Support Team, मैं (${widget.sectionName}) पोर्टल का उपयोगकर्ता हूँ। मेरा पंजीकृत मोबाइल नंबर $enteredMobile है। कृपया मेरा पासवर्ड / PIN रीसेट करने में सहायता करें।'
+        : 'नमस्ते Mandi Support Team, मैं (${widget.sectionName}) पोर्टल का उपयोगकर्ता हूँ। कृपया मेरा पासवर्ड / PIN रीसेट करने में सहायता करें।';
+
+    final url = Uri.parse(
+        'https://wa.me/$cleanPhone?text=${Uri.encodeComponent(message)}');
+    final canLaunch = await canLaunchUrl(url);
+    if (!mounted) return;
+
+    if (canLaunch) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('WhatsApp cannot be launched on this device')),
+      );
+    }
+  }
+
   void _initiateLogin() async {
     final identifier = _mobileController.text.trim();
     final pin = _pinController.text.trim();
@@ -508,7 +1026,7 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
     if (identifier.isEmpty || pin.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Please enter your Mobile/Email and Password'),
+          content: Text('Please enter your Mobile Number and Password'),
           backgroundColor: Colors.red,
         ),
       );
@@ -518,16 +1036,13 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
     setState(() => _isLoading = true);
 
     try {
-      // 1. Fetch live cloud account first from Firebase
       final cloudData =
           await CloudSyncService.getAccountByIdentifier(identifier)
               .timeout(const Duration(seconds: 6), onTimeout: () => null);
 
-      // =========================================================
-      // 🚫 PREVENT LOGIN WITH OLD / DELETED CREDENTIALS
-      // =========================================================
+      if (!mounted) return;
+
       if (cloudData == null) {
-        // If it does not exist in Firebase, purge any old cached record from local phone storage
         final accounts = AccountService.getAllAccounts();
         accounts.removeWhere(
           (a) =>
@@ -536,7 +1051,6 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
         );
         AccountService.saveAccounts(accounts);
 
-        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
@@ -546,20 +1060,15 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
             duration: Duration(seconds: 4),
           ),
         );
-        return; // Halts login execution immediately
+        return;
       }
 
-      // =========================================================
-      // 🔒 SUBSCRIPTION DUE / ACCOUNT LOCKED CHECK
-      // =========================================================
       final bool isLocked = cloudData['is_locked'] == true ||
           cloudData['is_blocked'] == true ||
           cloudData['account_status'] == 'locked' ||
           cloudData['account_status'] == 'suspended';
 
       if (isLocked) {
-        if (!mounted) return;
-
         showDialog(
           context: context,
           barrierDismissible: false,
@@ -610,7 +1119,6 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
         return;
       }
 
-      // 2. Parse live cloud account and sync with local storage
       final UserAccount liveUser = UserAccount.fromJson(cloudData);
       final accounts = AccountService.getAllAccounts();
       accounts.removeWhere(
@@ -619,9 +1127,6 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
       accounts.add(liveUser);
       AccountService.saveAccounts(accounts);
 
-      if (!mounted) return;
-
-      // 3. Section Access Check
       if (liveUser.section.toUpperCase() != widget.sectionName.toUpperCase()) {
         showDialog(
           context: context,
@@ -644,8 +1149,7 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
         return;
       }
 
-      // 4. Password / PIN Verification
-      if (liveUser.password != pin) {
+      if (liveUser.password.trim() != pin) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Incorrect Password / PIN!'),
@@ -655,7 +1159,6 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
         return;
       }
 
-      // 5. Email check for OTP
       final emailToUse = liveUser.email.trim();
       if (emailToUse.isEmpty || !emailToUse.contains('@')) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -678,7 +1181,6 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
         ),
       );
 
-      // Increased timeout to 15s for mobile networks
       bool sent = false;
       try {
         sent = await EmailService.sendOtpEmail(
@@ -788,7 +1290,6 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
 
               Navigator.pop(ctx);
 
-              StorageService.save('last_active_section', widget.sectionName);
               StorageService.save(
                 'session_${widget.sectionName}',
                 account.mobile,
@@ -831,9 +1332,12 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
               } else if (widget.sectionName == 'SELLER') {
                 targetPortal = SellerSectionPortal(user: account);
               } else {
-                targetPortal = BillGeneratorSectionPortal(
-                  username: account.name,
-                );
+                final isUnlocked =
+                    StorageService.get('session_BILL_GENERATOR_UNLOCKED') ==
+                        'true';
+                targetPortal = isUnlocked
+                    ? BillGeneratorSectionPortal(username: account.name)
+                    : BillGeneratorMaintenanceScreen(username: account.name);
               }
 
               Navigator.pushReplacement(
@@ -863,10 +1367,10 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
           child: Container(
             constraints: const BoxConstraints(maxWidth: 420),
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: const [
+              borderRadius: BorderRadius.all(Radius.circular(16)),
+              boxShadow: [
                 BoxShadow(
                   color: Colors.black45,
                   blurRadius: 18,
@@ -916,11 +1420,7 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
                 TextField(
                   controller: _pinController,
                   obscureText: _obscurePin,
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.digitsOnly,
-                    LengthLimitingTextInputFormatter(8),
-                  ],
+                  keyboardType: TextInputType.visiblePassword,
                   decoration: InputDecoration(
                     labelText: 'Security PIN / Password',
                     prefixIcon: const Icon(Icons.lock_outline),
@@ -935,7 +1435,23 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 20),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    onPressed: _requestPasswordResetViaWhatsApp,
+                    icon: const Icon(Icons.chat,
+                        size: 14, color: Color(0xFF25D366)),
+                    label: const Text(
+                      'पासवर्ड भूल गए? (WhatsApp रीसेट)',
+                      style: TextStyle(
+                        color: Color(0xFF25D366),
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF0F766E),
@@ -1026,7 +1542,18 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   bool _isLoading = false;
   String _generatedOtp = '';
 
-  // STEP 1: SEND OTP
+  @override
+  void dispose() {
+    _emailCtrl.dispose();
+    _otpCtrl.dispose();
+    _nameCtrl.dispose();
+    _mobileCtrl.dispose();
+    _addressCtrl.dispose();
+    _passwordCtrl.dispose();
+    _confirmPasswordCtrl.dispose();
+    super.dispose();
+  }
+
   Future<void> _handleSendOtp() async {
     final email = _emailCtrl.text.trim().toLowerCase();
     if (email.isEmpty || !email.contains('@') || !email.contains('.')) {
@@ -1042,7 +1569,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     setState(() => _isLoading = true);
 
     try {
-      // Ensure auth session is alive before checking accounts in Firestore
       await CloudSyncService.ensureAuthSession();
 
       final existing = await CloudSyncService.getAccountByIdentifier(email)
@@ -1103,7 +1629,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     }
   }
 
-  // STEP 2: VERIFY OTP
   void _handleVerifyOtp() {
     if (_otpCtrl.text.trim() == _generatedOtp) {
       setState(() => _currentStep = 3);
@@ -1117,7 +1642,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     }
   }
 
-  // STEP 3: FINALIZE PROFILE & SAVE TO FIRESTORE
   void _handleCompleteRegistration() async {
     final name = _nameCtrl.text.trim().toUpperCase();
     final mobile = _mobileCtrl.text.trim();
@@ -1154,10 +1678,24 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     setState(() => _isLoading = true);
 
     try {
-      // 1. Ensure valid Firebase Auth session before attempting write
       await CloudSyncService.ensureAuthSession();
-      final user = FirebaseAuth.instance.currentUser;
-      debugPrint('🔑 Registration attempting write under UID: ${user?.uid}');
+
+      final bool mobileExists =
+          await CloudSyncService.isMobileRegistered(mobile);
+      if (mobileExists) {
+        setState(() => _isLoading = false);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Mobile $mobile is already registered in the Mandi Network! Please login with your password.',
+            ),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        return;
+      }
 
       final newAccount = UserAccount(
         name: name,
@@ -1168,7 +1706,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         section: widget.sectionName,
       );
 
-      // Save locally
       final accounts = AccountService.getAllAccounts();
       accounts.removeWhere(
         (a) => a.mobile == mobile && a.section == widget.sectionName,
@@ -1176,13 +1713,19 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       accounts.add(newAccount);
       AccountService.saveAccounts(accounts);
 
-      // 2. Save directly to Cloud Firestore (with informative logging)
       try {
         await CloudSyncService.saveAccount(newAccount.toJson())
             .timeout(const Duration(seconds: 8));
-        debugPrint('✅ CloudSync: registered_accounts document saved!');
 
         if (widget.sectionName == 'BROKER') {
+          await CloudSyncService.initializeBrokerAccount(
+            brokerKey: mobile,
+            brokerName: name,
+            phone: mobile,
+            email: email,
+            address: address,
+          );
+
           final brokerProfile = BrokerFirmProfileModel(
             firmName: name,
             mobile: mobile,
@@ -1193,7 +1736,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
             mobile,
             brokerProfile.toJson(),
           ).timeout(const Duration(seconds: 8));
-          debugPrint('✅ CloudSync: broker_profiles document saved!');
         }
       } catch (cloudErr) {
         debugPrint('❌ CloudSync Write Error: $cloudErr');
@@ -1208,7 +1750,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         }
       }
 
-      StorageService.save('last_active_section', widget.sectionName);
       StorageService.save('session_${widget.sectionName}', mobile);
       StorageService.save('session_${widget.sectionName}_name', name);
       StorageService.save('session_${widget.sectionName}_mobile', mobile);
@@ -1225,7 +1766,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       } else if (widget.sectionName == 'SELLER') {
         targetPortal = SellerSectionPortal(user: newAccount);
       } else {
-        targetPortal = BillGeneratorSectionPortal(username: newAccount.name);
+        targetPortal =
+            BillGeneratorMaintenanceScreen(username: newAccount.name);
       }
 
       Navigator.pushAndRemoveUntil(
@@ -1264,10 +1806,10 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           child: Container(
             constraints: const BoxConstraints(maxWidth: 420),
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: const [
+              borderRadius: BorderRadius.all(Radius.circular(16)),
+              boxShadow: [
                 BoxShadow(
                   color: Colors.black45,
                   blurRadius: 18,
@@ -1543,80 +2085,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       height: 2,
       margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
       color: active ? const Color(0xFF0F766E) : Colors.grey.shade300,
-    );
-  }
-}
-
-// =============================================================
-// 5. BILL GENERATOR SECTION (ISOLATED)
-// =============================================================
-class BillGeneratorSectionPortal extends StatelessWidget {
-  final String username;
-
-  const BillGeneratorSectionPortal({super.key, required this.username});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          'BILL GENERATOR ($username)',
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        backgroundColor: const Color(0xFFA855F7),
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Logout',
-            onPressed: () {
-              StorageService.remove('session_BILL GENERATOR');
-              Navigator.pushAndRemoveUntil(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => const MainDashboardScreen(),
-                ),
-                (route) => false,
-              );
-            },
-          ),
-        ],
-      ),
-      body: Center(
-        child: Container(
-          width: 500,
-          padding: const EdgeInsets.all(28),
-          margin: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.receipt_long_rounded,
-                size: 64,
-                color: Color(0xFFA855F7),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'BILL & INVOICE GENERATOR',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Active Session: $username',
-                style: const TextStyle(color: Colors.black54),
-              ),
-              const Divider(height: 32),
-              const Text(
-                'Dedicated mandi bill printing, tax invoicing, and gate pass generator is isolated here.',
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }

@@ -6,14 +6,39 @@ const String kAppName = 'MANDI TRADE PORTAL';
 const String kAppNameHindi = 'मंडी व्यापार पोर्टल';
 
 Uint8List? decodeBase64Image(String? photoBase64) {
-  if (photoBase64 == null || photoBase64.isEmpty) return null;
+  if (photoBase64 == null || photoBase64.trim().isEmpty) return null;
   try {
-    final clean =
-        photoBase64.contains(',') ? photoBase64.split(',').last : photoBase64;
+    final clean = photoBase64.contains(',')
+        ? photoBase64.split(',').last.replaceAll(RegExp(r'\s+'), '')
+        : photoBase64.replaceAll(RegExp(r'\s+'), '');
+    if (clean.isEmpty) return null;
     return base64Decode(clean);
   } catch (_) {
     return null;
   }
+}
+
+DateTime _parseFlexibleDateTime(dynamic raw) {
+  if (raw == null) return DateTime.now();
+  if (raw is DateTime) return raw;
+  if (raw is int) return DateTime.fromMillisecondsSinceEpoch(raw);
+  try {
+    // Handles Firestore Timestamp objects dynamically without requiring cloud_firestore import
+    // ignore: avoid_dynamic_calls
+    final dynamic converted = raw.toDate();
+    if (converted is DateTime) return converted;
+  } catch (_) {}
+  return DateTime.tryParse(raw.toString()) ?? DateTime.now();
+}
+
+bool _parseBool(dynamic val) {
+  if (val is bool) return val;
+  if (val is num) return val != 0;
+  if (val is String) {
+    final lower = val.trim().toLowerCase();
+    return lower == 'true' || lower == '1' || lower == 'yes';
+  }
+  return false;
 }
 
 class UpperCaseTextFormatter extends TextInputFormatter {
@@ -72,17 +97,19 @@ class UserAccount {
         'address': address.trim(),
         'mobile': mobile.trim(),
         'email': email.trim().toLowerCase(),
-        'password': password,
+        'password': password.trim(),
         'section': section.trim().toUpperCase(),
       };
 
   factory UserAccount.fromJson(Map<String, dynamic> json) => UserAccount(
-        name: (json['name'] ?? '').toString().trim(),
+        name: (json['name'] ?? json['firmName'] ?? json['brokerName'] ?? '')
+            .toString()
+            .trim(),
         address: (json['address'] ?? '').toString().trim(),
-        mobile: (json['mobile'] ?? '').toString().trim(),
+        mobile: (json['mobile'] ?? json['phone'] ?? '').toString().trim(),
         email: (json['email'] ?? '').toString().trim().toLowerCase(),
-        password: (json['password'] ?? '').toString(),
-        section: (json['section'] ?? '').toString().trim().toUpperCase(),
+        password: (json['password'] ?? json['pin'] ?? '').toString().trim(),
+        section: (json['section'] ?? 'BROKER').toString().trim().toUpperCase(),
       );
 }
 
@@ -114,13 +141,13 @@ class AppNotification {
 
   factory AppNotification.fromJson(Map<String, dynamic> json) =>
       AppNotification(
-        id: (json['id'] ?? '').toString(),
+        id: (json['id'] ?? DateTime.now().millisecondsSinceEpoch.toString())
+            .toString(),
         targetMobile: (json['targetMobile'] ?? '').toString().trim(),
         title: (json['title'] ?? '').toString(),
         message: (json['message'] ?? '').toString(),
-        timestamp: json['timestamp'] != null
-            ? DateTime.tryParse(json['timestamp'].toString()) ?? DateTime.now()
-            : DateTime.now(),
+        timestamp:
+            _parseFlexibleDateTime(json['timestamp'] ?? json['createdAt']),
       );
 }
 
@@ -128,6 +155,21 @@ class AppNotification {
 // BROKER FIRM PROFILE MODEL
 // =============================================================
 class BrokerFirmProfileModel {
+  static const String kDefaultTerms =
+      '1. ALL DISPUTES SUBJECT TO LOCAL MANDI JURISDICTION.\n'
+      '2. PAYMENT MUST BE CLEARED WITHIN PRESCRIBED TIME.\n'
+      '3. BROKERAGE / DALALI APPLICABLE AS PER APMC REGULATIONS.';
+
+  static const List<String> kDefaultJins = [
+    'JEERA',
+    'SAUNF',
+    'ISABGOL',
+    'CHANA',
+    'DHANIYA',
+    'RAYDA',
+    'WHEAT',
+  ];
+
   String firmName;
   String address;
   String mobile;
@@ -158,11 +200,11 @@ class BrokerFirmProfileModel {
     this.defaultSellerDalali = 0.0,
     List<String>? commonJins,
     this.photoBase64,
-    this.termsAndConditions =
-        '1. ALL DISPUTES SUBJECT TO LOCAL MANDI JURISDICTION.\n2. PAYMENT MUST BE CLEARED WITHIN PRESCRIBED TIME.\n3. BROKERAGE / DALALI APPLICABLE AS PER APMC REGULATIONS.',
+    this.termsAndConditions = kDefaultTerms,
     this.whatsappMessageTemplate = '',
-  }) : commonJins = commonJins ??
-            ['JEERA', 'SAUNF', 'ISABGOL', 'CHANA', 'DHANIYA', 'RAYDA', 'WHEAT'];
+  }) : commonJins = commonJins != null && commonJins.isNotEmpty
+            ? List<String>.from(commonJins)
+            : List<String>.from(kDefaultJins);
 
   BrokerFirmProfileModel copyWith({
     String? firmName,
@@ -193,7 +235,7 @@ class BrokerFirmProfileModel {
       ifscCode: ifscCode ?? this.ifscCode,
       defaultBuyerDalali: defaultBuyerDalali ?? this.defaultBuyerDalali,
       defaultSellerDalali: defaultSellerDalali ?? this.defaultSellerDalali,
-      commonJins: commonJins ?? List.from(this.commonJins),
+      commonJins: commonJins ?? List<String>.from(this.commonJins),
       photoBase64: photoBase64 ?? this.photoBase64,
       termsAndConditions: termsAndConditions ?? this.termsAndConditions,
       whatsappMessageTemplate:
@@ -226,10 +268,22 @@ class BrokerFirmProfileModel {
       return double.tryParse(val.toString()) ?? 0.0;
     }
 
+    List<String>? parsedJins;
+    if (json['commonJins'] is List) {
+      parsedJins = (json['commonJins'] as List)
+          .map((e) => e.toString().trim().toUpperCase())
+          .where((e) => e.isNotEmpty)
+          .toList();
+    }
+
+    final rawTerms = json['termsAndConditions']?.toString().trim();
+
     return BrokerFirmProfileModel(
-      firmName: (json['firmName'] ?? '').toString().trim(),
+      firmName: (json['firmName'] ?? json['brokerName'] ?? json['name'] ?? '')
+          .toString()
+          .trim(),
       address: (json['address'] ?? '').toString().trim(),
-      mobile: (json['mobile'] ?? '').toString().trim(),
+      mobile: (json['mobile'] ?? json['phone'] ?? '').toString().trim(),
       panNo: (json['panNo'] ?? '').toString().trim().toUpperCase(),
       licenseNo: (json['licenseNo'] ?? '').toString().trim().toUpperCase(),
       email: (json['email'] ?? '').toString().trim().toLowerCase(),
@@ -238,11 +292,10 @@ class BrokerFirmProfileModel {
       ifscCode: (json['ifscCode'] ?? '').toString().trim().toUpperCase(),
       defaultBuyerDalali: parseDouble(json['defaultBuyerDalali']),
       defaultSellerDalali: parseDouble(json['defaultSellerDalali']),
-      commonJins: json['commonJins'] != null
-          ? List<String>.from(json['commonJins'])
-          : null,
+      commonJins: parsedJins,
       photoBase64: json['photoBase64']?.toString(),
-      termsAndConditions: (json['termsAndConditions'] ?? '').toString(),
+      termsAndConditions:
+          (rawTerms != null && rawTerms.isNotEmpty) ? rawTerms : kDefaultTerms,
       whatsappMessageTemplate:
           (json['whatsappMessageTemplate'] ?? '').toString(),
     );
@@ -376,9 +429,7 @@ class MandiSaudaModel {
     return MandiSaudaModel(
       id: (json['id'] ?? DateTime.now().millisecondsSinceEpoch.toString())
           .toString(),
-      date: json['date'] != null
-          ? DateTime.tryParse(json['date'].toString()) ?? DateTime.now()
-          : DateTime.now(),
+      date: _parseFlexibleDateTime(json['date']),
       buyer: (json['buyer'] ?? '').toString().trim(),
       buyerMobile: (json['buyerMobile'] ?? '').toString().trim(),
       seller: (json['seller'] ?? '').toString().trim(),
@@ -388,11 +439,11 @@ class MandiSaudaModel {
       rate: parseDouble(json['rate']),
       buyerDalaliPerBag: parseDouble(json['buyerDalaliPerBag']),
       sellerDalaliPerBag: parseDouble(json['sellerDalaliPerBag']),
-      buyerConfirmed: json['buyerConfirmed'] == true,
-      sellerConfirmed: json['sellerConfirmed'] == true,
+      buyerConfirmed: _parseBool(json['buyerConfirmed']),
+      sellerConfirmed: _parseBool(json['sellerConfirmed']),
       brokerFirmName: (json['brokerFirmName'] ?? '').toString().trim(),
       brokerMobile: (json['brokerMobile'] ?? '').toString().trim(),
-      cancelRequested: json['cancelRequested'] == true,
+      cancelRequested: _parseBool(json['cancelRequested']),
       cancelRequestedBy: json['cancelRequestedBy']?.toString(),
       cancellationReason: json['cancellationReason']?.toString(),
     );
@@ -412,21 +463,42 @@ class MandiPartyModel {
     required this.name,
     required this.mobile,
     required this.address,
-    required this.type,
-  });
+    required String type,
+  }) : type = _normalizePartyType(type);
+
+  static String _normalizePartyType(String raw) {
+    final upper = raw.trim().toUpperCase();
+    if (upper == 'SELLER') return 'Seller';
+    if (upper == 'BOTH') return 'Both';
+    return 'Buyer';
+  }
+
+  MandiPartyModel copyWith({
+    String? name,
+    String? mobile,
+    String? address,
+    String? type,
+  }) {
+    return MandiPartyModel(
+      name: name ?? this.name,
+      mobile: mobile ?? this.mobile,
+      address: address ?? this.address,
+      type: type ?? this.type,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
-        'name': name.trim(),
+        'name': name.trim().toUpperCase(),
         'mobile': mobile.trim(),
-        'address': address.trim(),
-        'type': type.trim(),
+        'address': address.trim().toUpperCase(),
+        'type': _normalizePartyType(type),
       };
 
   factory MandiPartyModel.fromJson(Map<String, dynamic> json) =>
       MandiPartyModel(
-        name: (json['name'] ?? '').toString().trim(),
-        mobile: (json['mobile'] ?? '').toString().trim(),
-        address: (json['address'] ?? '').toString().trim(),
-        type: (json['type'] ?? 'Buyer').toString().trim(),
+        name: (json['name'] ?? '').toString().trim().toUpperCase(),
+        mobile: (json['mobile'] ?? json['phone'] ?? '').toString().trim(),
+        address: (json['address'] ?? '').toString().trim().toUpperCase(),
+        type: _normalizePartyType((json['type'] ?? 'Buyer').toString()),
       );
 }

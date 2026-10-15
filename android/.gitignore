@@ -12,3 +12,11 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# Ignore private credentials
+serviceAccountKey.json
+scripts/ncdex_updater/serviceAccountKey.json
+
+# Ignore Node.js dependencies
+node_modules/
+scripts/ncdex_updater/node_modules/

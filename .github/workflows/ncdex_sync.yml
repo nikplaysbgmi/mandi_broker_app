@@ -1,30 +1,28 @@
-name: NCDEX Live Sync
+name: Automatic NCDEX Sync
 
 on:
   schedule:
-    # Triggers every hour from 09:00 AM to 05:00 PM IST (03:30 to 11:30 UTC), Monday - Friday
-    - cron: '30 3-11 * * 1-5'
+    # Monday to Friday every 10 minutes between 03:30 UTC and 11:30 UTC (09:00 AM - 05:00 PM IST)
+    - cron: '*/10 3-11 * * 1-5'
   workflow_dispatch:
 
 jobs:
-  sync-rates:
+  update-rates:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
-
     steps:
-      - name: Checkout repository
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '20'
 
       - name: Install dependencies
         working-directory: scripts/ncdex_updater
         run: npm install
 
-      - name: Run 5-Min Sync Engine
+      - name: Run NCDEX scraper & Firestore sync
         working-directory: scripts/ncdex_updater
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}

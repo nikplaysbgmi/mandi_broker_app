@@ -29,7 +29,9 @@ class MandiBillPrintScreen extends StatefulWidget {
 }
 
 class _MandiBillPrintScreenState extends State<MandiBillPrintScreen> {
-  final List<String> _monthNames = [
+  bool _isGeneratingPdf = false;
+
+  final List<String> _monthNames = const [
     '',
     'JANUARY',
     'FEBRUARY',
@@ -45,6 +47,18 @@ class _MandiBillPrintScreenState extends State<MandiBillPrintScreen> {
     'DECEMBER',
   ];
 
+  Uint8List? _safeDecodeLogo(String? rawBase64) {
+    if (rawBase64 == null || rawBase64.trim().isEmpty) return null;
+    try {
+      final clean = rawBase64.contains(',')
+          ? rawBase64.split(',').last.trim()
+          : rawBase64.trim();
+      return base64Decode(clean);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _generateAndDownloadPdf({
     required List<MandiSaudaModel> sortedDeals,
     required Map<String, List<MandiSaudaModel>> monthlyGroups,
@@ -52,23 +66,25 @@ class _MandiBillPrintScreenState extends State<MandiBillPrintScreen> {
     required double grandTotalDalali,
     required String dateRangeText,
   }) async {
+    if (_isGeneratingPdf) return;
+    setState(() => _isGeneratingPdf = true);
+
     try {
       final doc = pw.Document();
 
-      // System fonts that render Indian Rupee (₹) & clean text
-      final baseFont = await PdfGoogleFonts.poppinsRegular();
-      final boldFont = await PdfGoogleFonts.poppinsBold();
-
-      Uint8List? logoBytes;
-      if (widget.brokerProfile.photoBase64 != null &&
-          widget.brokerProfile.photoBase64!.isNotEmpty) {
-        try {
-          final clean = widget.brokerProfile.photoBase64!.contains(',')
-              ? widget.brokerProfile.photoBase64!.split(',').last
-              : widget.brokerProfile.photoBase64!;
-          logoBytes = base64Decode(clean);
-        } catch (_) {}
+      // Supports English, Hindi (Devanagari), and Indian Rupee (₹) symbol
+      pw.Font baseFont;
+      pw.Font boldFont;
+      try {
+        baseFont = await PdfGoogleFonts.notoSansDevanagariRegular();
+        boldFont = await PdfGoogleFonts.notoSansDevanagariBold();
+      } catch (_) {
+        baseFont = pw.Font.helvetica();
+        boldFont = pw.Font.helveticaBold();
       }
+
+      final Uint8List? logoBytes =
+          _safeDecodeLogo(widget.brokerProfile.photoBase64);
 
       final firmTitle = widget.brokerProfile.firmName.isEmpty
           ? 'MANDI BROKER'
@@ -77,6 +93,7 @@ class _MandiBillPrintScreenState extends State<MandiBillPrintScreen> {
       doc.addPage(
         pw.MultiPage(
           pageFormat: PdfPageFormat.a4,
+          theme: pw.ThemeData.withFont(base: baseFont, bold: boldFont),
           margin: const pw.EdgeInsets.all(20),
           build: (pw.Context ctx) {
             final List<pw.Widget> elements = [];
@@ -225,12 +242,13 @@ class _MandiBillPrintScreenState extends State<MandiBillPrintScreen> {
                 );
               }
 
-              final totalBags = entry.value.fold<int>(0, (s, e) => s + e.bags);
+              final totalBags =
+                  entry.value.fold<int>(0, (acc, e) => acc + e.bags);
               final totalDalali = entry.value
                   .fold<double>(
                       0.0,
-                      (s, e) =>
-                          s +
+                      (acc, e) =>
+                          acc +
                           (widget.isBuyer
                               ? e.totalBuyerDalali
                               : e.totalSellerDalali))
@@ -337,7 +355,6 @@ class _MandiBillPrintScreenState extends State<MandiBillPrintScreen> {
         ),
       );
 
-      // System PDF sheet launcher
       await Printing.layoutPdf(
         name: 'Sauda_${widget.party.name.replaceAll(' ', '_')}.pdf',
         onLayout: (PdfPageFormat format) async => doc.save(),
@@ -349,6 +366,10 @@ class _MandiBillPrintScreenState extends State<MandiBillPrintScreen> {
             content: Text('PDF generation error: $e'),
             backgroundColor: Colors.red),
       );
+    } finally {
+      if (mounted) {
+        setState(() => _isGeneratingPdf = false);
+      }
     }
   }
 
@@ -378,20 +399,21 @@ class _MandiBillPrintScreenState extends State<MandiBillPrintScreen> {
       monthlyGroups[key]!.add(d);
     }
 
-    int grandTotalBags = sortedDeals.fold(0, (sum, d) => sum + d.bags);
-    double grandTotalDalali = sortedDeals.fold(
+    final int grandTotalBags =
+        sortedDeals.fold<int>(0, (acc, d) => acc + d.bags);
+    final double grandTotalDalali = sortedDeals.fold<double>(
       0.0,
-      (sum, d) =>
-          sum + (widget.isBuyer ? d.totalBuyerDalali : d.totalSellerDalali),
+      (acc, d) =>
+          acc + (widget.isBuyer ? d.totalBuyerDalali : d.totalSellerDalali),
     );
-    String dateRangeText = sortedDeals.isEmpty
+    final String dateRangeText = sortedDeals.isEmpty
         ? 'NO TRANSACTIONS IN PERIOD'
         : 'FROM: ${sortedDeals.first.date.day.toString().padLeft(2, '0')}/${sortedDeals.first.date.month.toString().padLeft(2, '0')}/${sortedDeals.first.date.year}  TILL: ${sortedDeals.last.date.day.toString().padLeft(2, '0')}/${sortedDeals.last.date.month.toString().padLeft(2, '0')}/${sortedDeals.last.date.year}';
 
     final firmTitle = widget.brokerProfile.firmName.isEmpty
         ? 'MANDI BROKER'
         : widget.brokerProfile.firmName;
-    final logoBytes = decodeBase64Image(widget.brokerProfile.photoBase64);
+    final logoBytes = _safeDecodeLogo(widget.brokerProfile.photoBase64);
 
     return Scaffold(
       backgroundColor: Colors.grey.shade300,
@@ -409,18 +431,30 @@ class _MandiBillPrintScreenState extends State<MandiBillPrintScreen> {
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(20)),
               ),
-              onPressed: () => _generateAndDownloadPdf(
-                sortedDeals: sortedDeals,
-                monthlyGroups: monthlyGroups,
-                grandTotalBags: grandTotalBags,
-                grandTotalDalali: grandTotalDalali,
-                dateRangeText: dateRangeText,
-              ),
-              icon:
-                  const Icon(Icons.picture_as_pdf, size: 18, color: Colors.red),
-              label: const Text(
-                'PDF',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              onPressed: _isGeneratingPdf
+                  ? null
+                  : () => _generateAndDownloadPdf(
+                        sortedDeals: sortedDeals,
+                        monthlyGroups: monthlyGroups,
+                        grandTotalBags: grandTotalBags,
+                        grandTotalDalali: grandTotalDalali,
+                        dateRangeText: dateRangeText,
+                      ),
+              icon: _isGeneratingPdf
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Color(0xFF0F766E),
+                      ),
+                    )
+                  : const Icon(Icons.picture_as_pdf,
+                      size: 18, color: Colors.red),
+              label: Text(
+                _isGeneratingPdf ? 'WAIT...' : 'PDF',
+                style:
+                    const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
               ),
             ),
           ),
@@ -615,14 +649,14 @@ class _MandiBillPrintScreenState extends State<MandiBillPrintScreen> {
                               const _PrintCell(''),
                               _PrintCell(
                                 monthEntry.value
-                                    .fold<int>(0, (s, e) => s + e.bags)
+                                    .fold<int>(0, (acc, e) => acc + e.bags)
                                     .toString(),
                                 isBold: true,
                                 alignRight: true,
                               ),
                               const _PrintCell(''),
                               _PrintCell(
-                                '₹${monthEntry.value.fold<double>(0.0, (s, e) => s + (widget.isBuyer ? e.totalBuyerDalali : e.totalSellerDalali)).toStringAsFixed(0)}',
+                                '₹${monthEntry.value.fold<double>(0.0, (acc, e) => acc + (widget.isBuyer ? e.totalBuyerDalali : e.totalSellerDalali)).toStringAsFixed(0)}',
                                 isBold: true,
                                 alignRight: true,
                               ),

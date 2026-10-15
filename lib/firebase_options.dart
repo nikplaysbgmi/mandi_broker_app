@@ -29,10 +29,7 @@ class DefaultFirebaseOptions {
       case TargetPlatform.windows:
         return windows;
       case TargetPlatform.linux:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for linux - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return linux;
       default:
         throw UnsupportedError(
           'DefaultFirebaseOptions are not supported for this platform.',
@@ -77,6 +74,16 @@ class DefaultFirebaseOptions {
   );
 
   static const FirebaseOptions windows = FirebaseOptions(
+    apiKey: 'AIzaSyBLhlfYNLMg8hmH2e5n8d6kggUfQflQOMg',
+    appId: '1:839050009459:web:42f009a77b035e7a5f4306',
+    messagingSenderId: '839050009459',
+    projectId: 'mandi-trade-portal',
+    authDomain: 'mandi-trade-portal.firebaseapp.com',
+    storageBucket: 'mandi-trade-portal.firebasestorage.app',
+    measurementId: 'G-J1HH25WFTJ',
+  );
+
+  static const FirebaseOptions linux = FirebaseOptions(
     apiKey: 'AIzaSyBLhlfYNLMg8hmH2e5n8d6kggUfQflQOMg',
     appId: '1:839050009459:web:42f009a77b035e7a5f4306',
     messagingSenderId: '839050009459',

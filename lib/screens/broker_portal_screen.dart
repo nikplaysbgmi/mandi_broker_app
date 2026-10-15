@@ -1,21 +1,22 @@
 import 'dart:async';
 import 'dart:convert';
-
 import 'dart:math';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-import 'main_dashboard_screen.dart';
 import '../models/mandi_models.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/email_service.dart';
 import '../services/mandi_services.dart';
 import 'bill_print_screen.dart';
+import 'main_dashboard_screen.dart';
 
 // =============================================================
-// 4. COMPLETE BROKER MODULE (WITH WHATSAPP TEMPLATE EDITOR IN PROFILE)
+// 4. COMPLETE BROKER MODULE (ISOLATED BROKER DIRECTORY)
 // =============================================================
 class BrokerSectionPortal extends StatefulWidget {
   const BrokerSectionPortal({super.key});
@@ -31,6 +32,15 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
   BrokerFirmProfileModel _brokerProfile = BrokerFirmProfileModel();
   UserAccount? _currentUser;
   StreamSubscription<bool>? _lockSubscription;
+  StreamSubscription<List<Map<String, dynamic>>>? _partiesSubscription;
+
+  String get _activeBrokerKey {
+    final mob = _currentUser?.mobile ??
+        StorageService.get('session_BROKER_mobile') ??
+        StorageService.get('session_BROKER') ??
+        '';
+    return CloudSyncService.getActiveBrokerKey(mob.isNotEmpty ? mob : null);
+  }
 
   @override
   void initState() {
@@ -58,18 +68,13 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
 
   void _forceLogoutDueToLock() {
     _lockSubscription?.cancel();
+    _partiesSubscription?.cancel();
 
-    // Clear local session keys to prevent immediate re-entry
     StorageService.remove('session_BROKER');
     StorageService.remove('session_BROKER_mobile');
 
-    // Route back to the main dashboard
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (context) => const MainDashboardScreen()),
-      (route) => false,
-    );
+    if (!mounted) return;
 
-    // Display the lock dialog
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -95,7 +100,16 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
               backgroundColor: const Color(0xFF0F766E),
               foregroundColor: Colors.white,
             ),
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () {
+              Navigator.pop(ctx);
+              if (mounted) {
+                Navigator.of(context).pushAndRemoveUntil(
+                  MaterialPageRoute(
+                      builder: (context) => const MainDashboardScreen()),
+                  (route) => false,
+                );
+              }
+            },
             child: const Text('OK'),
           ),
         ],
@@ -106,13 +120,13 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
   @override
   void dispose() {
     _lockSubscription?.cancel();
+    _partiesSubscription?.cancel();
     super.dispose();
   }
 
   void _loadAllFromStorage() async {
     _currentUser = AccountService.getSessionUser('BROKER');
 
-    // 1. Fallback to storage session if _currentUser fields are empty
     final fallbackMobile = StorageService.get('session_BROKER_mobile') ??
         StorageService.get('session_BROKER') ??
         '';
@@ -144,7 +158,6 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
       }
     }
 
-    // Ensure profile always has default populated values
     if (_brokerProfile.firmName.isEmpty) {
       _brokerProfile.firmName = _currentUser?.name.isNotEmpty == true
           ? _currentUser!.name
@@ -164,12 +177,16 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
           : fallbackAddress;
     }
 
-    CloudSyncService.streamParties().listen((partiesData) {
+    _partiesSubscription?.cancel();
+    _partiesSubscription =
+        CloudSyncService.streamBrokerParties(_activeBrokerKey)
+            .listen((partiesData) {
       if (mounted) {
         setState(() {
           _parties =
               partiesData.map((p) => MandiPartyModel.fromJson(p)).toList();
         });
+        _persistParties();
       }
     });
 
@@ -202,7 +219,11 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
       if (index != -1) _saudaRecords[index] = updated;
     });
     _persistSaudas();
-    CloudSyncService.updateSauda(updated.id, updated.toJson());
+    CloudSyncService.updateSauda(
+      updated.id,
+      updated.toJson(),
+      brokerKey: _activeBrokerKey,
+    );
   }
 
   void _deleteSauda(String id) {
@@ -215,6 +236,7 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
         title: '⚠️ Sauda Deleted by Broker (${_brokerProfile.firmName})',
         message:
             'Deal for ${s.jins} (${s.bags} Bags) has been removed by broker.',
+        brokerKey: _activeBrokerKey,
       );
 
       CloudSyncService.sendNotification(
@@ -222,9 +244,10 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
         title: '⚠️ Sauda Deleted by Broker (${_brokerProfile.firmName})',
         message:
             'Deal for ${s.jins} (${s.bags} Bags) has been removed by broker.',
+        brokerKey: _activeBrokerKey,
       );
 
-      CloudSyncService.deleteSauda(id);
+      CloudSyncService.deleteSauda(id, brokerKey: _activeBrokerKey);
     }
 
     setState(() => _saudaRecords.removeWhere((s) => s.id == id));
@@ -234,7 +257,10 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
   void _addParty(MandiPartyModel party) {
     setState(() => _parties.add(party));
     _persistParties();
-    CloudSyncService.saveParty(party.toJson());
+    CloudSyncService.saveBrokerParty(
+      brokerKey: _activeBrokerKey,
+      partyData: party.toJson(),
+    );
   }
 
   void _editParty(String oldMobile, MandiPartyModel updatedParty) {
@@ -255,11 +281,20 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
     });
     _persistParties();
     _persistSaudas();
+
+    if (oldMobile != updatedParty.mobile) {
+      CloudSyncService.deleteBrokerParty(_activeBrokerKey, oldMobile);
+    }
+    CloudSyncService.saveBrokerParty(
+      brokerKey: _activeBrokerKey,
+      partyData: updatedParty.toJson(),
+    );
   }
 
   void _deleteParty(String mobile) {
     setState(() => _parties.removeWhere((p) => p.mobile == mobile));
     _persistParties();
+    CloudSyncService.deleteBrokerParty(_activeBrokerKey, mobile);
   }
 
   void _updateProfile(BrokerFirmProfileModel updated) {
@@ -268,6 +303,9 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
   }
 
   void _logout() {
+    _partiesSubscription?.cancel();
+    _lockSubscription?.cancel();
+
     StorageService.remove('last_active_section');
     StorageService.remove('session_BROKER');
     StorageService.remove('session_BROKER_name');
@@ -284,10 +322,8 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
 
   @override
   Widget build(BuildContext context) {
-    final brokerMobile = _currentUser?.mobile ?? _brokerProfile.mobile;
-
     return StreamBuilder<List<Map<String, dynamic>>>(
-      stream: CloudSyncService.streamBrokerSaudas(brokerMobile),
+      stream: CloudSyncService.streamBrokerSaudas(_activeBrokerKey),
       builder: (context, snapshot) {
         if (snapshot.hasData) {
           _saudaRecords = snapshot.data!
@@ -302,6 +338,7 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
             parties: _parties,
             brokerProfile: _brokerProfile,
             currentUser: _currentUser,
+            brokerKey: _activeBrokerKey,
             onSaudaSaved: _addSauda,
             onSaudaEdited: _editSauda,
             onSaudaDeleted: _deleteSauda,
@@ -313,6 +350,7 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
             saudaRecords: _saudaRecords,
             parties: _parties,
             brokerProfile: _brokerProfile,
+            brokerKey: _activeBrokerKey,
             onPartyAdded: _addParty,
             onPartyEdited: _editParty,
             onPartyDeleted: _deleteParty,
@@ -353,6 +391,7 @@ class BrokerDealEntryTab extends StatefulWidget {
   final List<MandiPartyModel> parties;
   final BrokerFirmProfileModel brokerProfile;
   final UserAccount? currentUser;
+  final String brokerKey;
   final Function(MandiSaudaModel) onSaudaSaved;
   final Function(MandiSaudaModel) onSaudaEdited;
   final Function(String) onSaudaDeleted;
@@ -366,6 +405,7 @@ class BrokerDealEntryTab extends StatefulWidget {
     required this.parties,
     required this.brokerProfile,
     required this.currentUser,
+    required this.brokerKey,
     required this.onSaudaSaved,
     required this.onSaudaEdited,
     required this.onSaudaDeleted,
@@ -410,6 +450,15 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
           ? widget.brokerProfile.defaultSellerDalali.toStringAsFixed(0)
           : '0',
     );
+  }
+
+  @override
+  void dispose() {
+    _bagsController.dispose();
+    _rateController.dispose();
+    _buyerDalaliRateController.dispose();
+    _sellerDalaliRateController.dispose();
+    super.dispose();
   }
 
   void _calculateLiveDalali() {
@@ -778,7 +827,12 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
     );
 
     widget.onSaudaSaved(newSauda);
-    await CloudSyncService.bookSauda(newSauda.toJson());
+    await CloudSyncService.bookSauda(
+      saudaData: newSauda.toJson(),
+      brokerKey: widget.brokerKey,
+    );
+
+    if (!mounted) return;
 
     setState(() {
       _buyerController?.clear();
@@ -855,7 +909,7 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
                           backgroundColor:
                               const Color(0xFF0F766E).withValues(alpha: 0.15),
                           child: Text(
-                            party.name[0],
+                            party.name.isNotEmpty ? party.name[0] : '?',
                             style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               color: Color(0xFF0F766E),
@@ -994,6 +1048,7 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
                       saudaRecords: widget.saudaRecords,
                       parties: widget.parties,
                       currentUser: widget.currentUser,
+                      brokerKey: widget.brokerKey,
                       onProfileUpdated: (updated) {
                         widget.onProfileUpdated(updated);
                         setState(() {
@@ -1266,10 +1321,6 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
                   ),
                 ),
                 const SizedBox(height: 14),
-
-                // =========================================================
-                // CLEAN & RESPONSIVE DALALI SUMMARY BOX
-                // =========================================================
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 10,
@@ -1400,7 +1451,7 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
                     ),
                     if (widget.saudaRecords.isNotEmpty)
                       Text(
-                        "Total Dalali: ₹${widget.saudaRecords.fold(0.0, (sum, item) => sum + item.totalDalaliEarned).toStringAsFixed(0)}",
+                        "Total Dalali: ₹${widget.saudaRecords.fold<double>(0.0, (acc, item) => acc + item.totalDalaliEarned).toStringAsFixed(0)}",
                         style: const TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.bold,
@@ -1732,6 +1783,7 @@ class BrokerKhataDirectoryTab extends StatefulWidget {
   final List<MandiSaudaModel> saudaRecords;
   final List<MandiPartyModel> parties;
   final BrokerFirmProfileModel brokerProfile;
+  final String brokerKey;
   final Function(MandiPartyModel) onPartyAdded;
   final Function(String, MandiPartyModel) onPartyEdited;
   final Function(String) onPartyDeleted;
@@ -1743,6 +1795,7 @@ class BrokerKhataDirectoryTab extends StatefulWidget {
     required this.saudaRecords,
     required this.parties,
     required this.brokerProfile,
+    required this.brokerKey,
     required this.onPartyAdded,
     required this.onPartyEdited,
     required this.onPartyDeleted,
@@ -2111,13 +2164,13 @@ class _BrokerKhataDirectoryTabState extends State<BrokerKhataDirectoryTab>
     final buyerData = _aggregatePartyData(filtered, true);
     final sellerData = _aggregatePartyData(filtered, false);
 
-    double totalBuyerDalali = buyerData.values.fold(
+    double totalBuyerDalali = buyerData.values.fold<double>(
       0.0,
-      (s, e) => s + (e['dalaliDue'] as double),
+      (acc, e) => acc + (e['dalaliDue'] as double),
     );
-    double totalSellerDalali = sellerData.values.fold(
+    double totalSellerDalali = sellerData.values.fold<double>(
       0.0,
-      (s, e) => s + (e['dalaliDue'] as double),
+      (acc, e) => acc + (e['dalaliDue'] as double),
     );
 
     return Scaffold(
@@ -2554,12 +2607,12 @@ class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
     }
 
     final deals = _filteredDeals;
-    double totalDalali = deals.fold(
+    double totalDalali = deals.fold<double>(
       0.0,
-      (sum, d) =>
-          sum + (widget.isBuyer ? d.totalBuyerDalali : d.totalSellerDalali),
+      (acc, d) =>
+          acc + (widget.isBuyer ? d.totalBuyerDalali : d.totalSellerDalali),
     );
-    int totalBags = deals.fold(0, (sum, d) => sum + d.bags);
+    int totalBags = deals.fold<int>(0, (acc, d) => acc + d.bags);
     String currentPeriodText = '${_months[_selectedMonth]} $_selectedYear';
 
     return Scaffold(
@@ -2710,7 +2763,6 @@ class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
                                     size: 18, color: Colors.green),
                                 tooltip: 'WhatsApp Slip',
                                 onPressed: () async {
-                                  // Pick the sauda mobile number, or fallback to the party mobile
                                   final targetMobile = widget.isBuyer
                                       ? d.buyerMobile
                                       : d.sellerMobile;
@@ -2721,6 +2773,7 @@ class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
                                           : fallbackMobile.trim();
 
                                   if (mobileToUse.isEmpty) {
+                                    if (!mounted) return;
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       const SnackBar(
                                         content: Text(
@@ -2791,13 +2844,14 @@ class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
 }
 
 // -------------------------------------------------------------
-// BROKER PROFILE SCREEN (WITH WHATSAPP TEMPLATE EDITOR & REAL EMAIL OTP)
+// BROKER PROFILE SCREEN (WITH FIREBASE PASSWORD SYNC & WHATSAPP)
 // -------------------------------------------------------------
 class BrokerProfileScreen extends StatefulWidget {
   final BrokerFirmProfileModel profile;
   final List<MandiSaudaModel> saudaRecords;
   final List<MandiPartyModel> parties;
   final UserAccount? currentUser;
+  final String brokerKey;
   final Function(BrokerFirmProfileModel) onProfileUpdated;
   final VoidCallback onLogout;
 
@@ -2807,6 +2861,7 @@ class BrokerProfileScreen extends StatefulWidget {
     required this.saudaRecords,
     required this.parties,
     required this.currentUser,
+    required this.brokerKey,
     required this.onProfileUpdated,
     required this.onLogout,
   });
@@ -2816,6 +2871,8 @@ class BrokerProfileScreen extends StatefulWidget {
 }
 
 class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
+  static const String adminSupportPhone = '+919876543210';
+
   late TextEditingController _firmCtrl;
   late TextEditingController _addrCtrl;
   late TextEditingController _mobCtrl;
@@ -2867,6 +2924,25 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
     _photoBase64 = p.photoBase64;
   }
 
+  @override
+  void dispose() {
+    _firmCtrl.dispose();
+    _addrCtrl.dispose();
+    _mobCtrl.dispose();
+    _panCtrl.dispose();
+    _licCtrl.dispose();
+    _emailCtrl.dispose();
+    _bankCtrl.dispose();
+    _accCtrl.dispose();
+    _ifscCtrl.dispose();
+    _bDalaliCtrl.dispose();
+    _sDalaliCtrl.dispose();
+    _termsCtrl.dispose();
+    _whatsappTemplateCtrl.dispose();
+    _newJinsCtrl.dispose();
+    super.dispose();
+  }
+
   Future<void> _pickProfileImage() async {
     try {
       final ImagePicker picker = ImagePicker();
@@ -2895,10 +2971,113 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
     }
   }
 
+  Future<void> _requestPasswordResetViaWhatsApp() async {
+    final cleanPhone = adminSupportPhone.replaceAll(RegExp(r'[^0-9]'), '');
+    final brokerMob = _mobCtrl.text.trim().isNotEmpty
+        ? _mobCtrl.text.trim()
+        : (widget.currentUser?.mobile ?? '');
+    final firm = _firmCtrl.text.trim().isNotEmpty
+        ? _firmCtrl.text.trim()
+        : widget.profile.firmName;
+
+    final message =
+        'नमस्ते Mandi Support Team, मैं ब्रोकर ($firm, मोबाइल: $brokerMob) हूँ। कृपया मेरा ब्रोकर पोर्टल पासवर्ड / PIN रीसेट या अपडेट करने में सहायता करें।';
+
+    final url = Uri.parse(
+        'https://wa.me/$cleanPhone?text=${Uri.encodeComponent(message)}');
+    final canLaunch = await canLaunchUrl(url);
+    if (!mounted) return;
+
+    if (canLaunch) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('WhatsApp cannot be launched on this device')),
+      );
+    }
+  }
+
+  Future<void> _syncPasswordToFirebase({
+    required String mobile,
+    required String email,
+    required String newPassword,
+  }) async {
+    await CloudSyncService.ensureAuthSession();
+    final firestore = FirebaseFirestore.instance;
+    final cleanMobile = mobile.trim();
+    final cleanEmail = email.trim().toLowerCase();
+
+    final user = widget.currentUser ??
+        UserAccount(
+          name: _firmCtrl.text.trim().toUpperCase(),
+          mobile: cleanMobile,
+          email: cleanEmail,
+          address: _addrCtrl.text.trim().toUpperCase(),
+          password: newPassword,
+          section: 'BROKER',
+        );
+    user.password = newPassword;
+
+    await CloudSyncService.saveAccount(user.toJson());
+
+    if (cleanMobile.isNotEmpty) {
+      await firestore.collection('accounts').doc(cleanMobile).set({
+        'password': newPassword,
+        'updated_at': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      final mobSnap = await firestore
+          .collection('accounts')
+          .where('mobile', isEqualTo: cleanMobile)
+          .get();
+      for (final doc in mobSnap.docs) {
+        await doc.reference.update({
+          'password': newPassword,
+          'updated_at': FieldValue.serverTimestamp(),
+        });
+      }
+
+      await firestore.collection('broker_profiles').doc(cleanMobile).set({
+        'password': newPassword,
+        'updated_at': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      await firestore.collection('brokers').doc(cleanMobile).set({
+        'password': newPassword,
+        'updated_at': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    }
+
+    if (cleanEmail.isNotEmpty) {
+      final emailSnap = await firestore
+          .collection('accounts')
+          .where('email', isEqualTo: cleanEmail)
+          .get();
+      for (final doc in emailSnap.docs) {
+        await doc.reference.update({
+          'password': newPassword,
+          'updated_at': FieldValue.serverTimestamp(),
+        });
+      }
+    }
+
+    AccountService.updateAccount(user);
+    StorageService.save('session_BROKER_password', newPassword);
+  }
+
   void _openChangePasswordDialog() {
-    final currentEmail = widget.profile.email.isNotEmpty
-        ? widget.profile.email
-        : (widget.currentUser?.email ?? '');
+    final currentEmail = _emailCtrl.text.trim().isNotEmpty
+        ? _emailCtrl.text.trim()
+        : (widget.profile.email.isNotEmpty
+            ? widget.profile.email
+            : (widget.currentUser?.email ?? ''));
+
+    final currentMobile = _mobCtrl.text.trim().isNotEmpty
+        ? _mobCtrl.text.trim()
+        : (widget.profile.mobile.isNotEmpty
+            ? widget.profile.mobile
+            : (widget.currentUser?.mobile ?? ''));
 
     if (currentEmail.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -3002,19 +3181,33 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
                   title: 'Verify Password Change',
                   email: currentEmail,
                   otp: otp,
-                  onVerified: () {
-                    final user = widget.currentUser;
-                    if (user != null) {
-                      user.password = newPass;
-                      AccountService.updateAccount(user);
-                    }
+                  onVerified: () async {
+                    try {
+                      await _syncPasswordToFirebase(
+                        mobile: currentMobile,
+                        email: currentEmail,
+                        newPassword: newPass,
+                      );
 
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Password updated successfully!'),
-                        backgroundColor: Colors.teal,
-                      ),
-                    );
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Password updated in Firebase & local storage successfully!',
+                          ),
+                          backgroundColor: Colors.teal,
+                        ),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content:
+                              Text('Failed to sync password to Firebase: $e'),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                    }
                   },
                 );
               } else {
@@ -3125,6 +3318,23 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
     final originalEmail = widget.profile.email.toLowerCase();
     final originalMobile = widget.profile.mobile;
 
+    if (newMobile.isNotEmpty && newMobile != originalMobile) {
+      final isTaken = await CloudSyncService.isMobileRegistered(newMobile);
+      if (!mounted) return;
+      if (isTaken) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Mobile number $newMobile is already used by another account in the Mandi Network!',
+            ),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        return;
+      }
+    }
+
     if (newEmail.isNotEmpty &&
         originalEmail.isNotEmpty &&
         (newEmail != originalEmail || newMobile != originalMobile)) {
@@ -3203,7 +3413,6 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
     );
 
     try {
-      // 1. Sync & Migrate in Firebase Firestore (Removes old doc completely)
       await CloudSyncService.updateProfile(
         section: 'BROKER',
         oldMobile: originalMobile,
@@ -3214,16 +3423,19 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
         address: newAddress,
       );
 
-      // 2. Save Broker Business Profile in Firestore
       await CloudSyncService.saveBrokerProfile(newMobile, updated.toJson());
 
-      // 3. Purge old local session & storage references if mobile changed
       if (originalMobile.isNotEmpty && originalMobile != newMobile) {
         AccountService.removeAccount(mobile: originalMobile, section: 'BROKER');
         StorageService.remove('session_BROKER_$originalMobile');
+
+        final oldParties = StorageService.get('broker_parties_$originalMobile');
+        if (oldParties != null) {
+          StorageService.save('broker_parties_$newMobile', oldParties);
+          StorageService.remove('broker_parties_$originalMobile');
+        }
       }
 
-      // 4. Save new session keys
       StorageService.save('session_BROKER', newMobile);
       StorageService.save('session_BROKER_name', newFirmName);
       StorageService.save('session_BROKER_mobile', newMobile);
@@ -3238,7 +3450,6 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
         AccountService.updateAccount(widget.currentUser!);
       }
 
-      // 5. Transfer local in-memory sauda records
       if (originalMobile.isNotEmpty && originalMobile != newMobile) {
         for (var s in widget.saudaRecords) {
           if (s.brokerMobile == originalMobile) {
@@ -3258,8 +3469,8 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content:
-              Text('Profile updated & synchronized! Old mobile/email wiped.'),
+          content: Text(
+              'Profile updated & synchronized! All data migrated to new number.'),
           backgroundColor: Color(0xFF0F766E),
         ),
       );
@@ -3400,10 +3611,10 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    int totalBags = widget.saudaRecords.fold(0, (s, e) => s + e.bags);
-    double totalDalali = widget.saudaRecords.fold(
+    int totalBags = widget.saudaRecords.fold<int>(0, (acc, e) => acc + e.bags);
+    double totalDalali = widget.saudaRecords.fold<double>(
       0.0,
-      (s, e) => s + e.totalDalaliEarned,
+      (acc, e) => acc + e.totalDalaliEarned,
     );
     final photoBytes = decodeBase64Image(_photoBase64);
 
@@ -3446,9 +3657,6 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // =========================================================
-                // CLEAN BROKER PROFILE METRICS
-                // =========================================================
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
@@ -3802,7 +4010,7 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
                         ),
                         const SizedBox(height: 4),
                         const Text(
-                          'Change password with Gmail OTP verification.',
+                          'Change password via Gmail OTP (updates Firebase) or request via WhatsApp.',
                           style: TextStyle(
                             fontSize: 11.5,
                             color: Colors.black54,
@@ -3810,17 +4018,41 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
                         ),
                         const Divider(),
                         const SizedBox(height: 8),
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF0F766E),
-                            foregroundColor: Colors.white,
-                          ),
-                          onPressed: _openChangePasswordDialog,
-                          icon: const Icon(Icons.lock_reset),
-                          label: const Text(
-                            'CHANGE PASSWORD (GMAIL OTP)',
-                            style: TextStyle(fontSize: 12),
-                          ),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF0F766E),
+                                foregroundColor: Colors.white,
+                              ),
+                              onPressed: _openChangePasswordDialog,
+                              icon: const Icon(Icons.lock_reset, size: 18),
+                              label: const Text(
+                                'CHANGE PASSWORD (GMAIL OTP)',
+                                style: TextStyle(fontSize: 12),
+                              ),
+                            ),
+                            OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: const Color(0xFF25D366),
+                                side: const BorderSide(
+                                  color: Color(0xFF25D366),
+                                  width: 1.4,
+                                ),
+                              ),
+                              onPressed: _requestPasswordResetViaWhatsApp,
+                              icon: const Icon(Icons.chat, size: 18),
+                              label: const Text(
+                                'WHATSAPP PASSWORD RESET',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),

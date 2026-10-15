@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -20,7 +21,10 @@ class StorageService {
   /// Saves a string key-value pair to persistent storage.
   static void save(String key, String value) {
     if (_prefs == null) {
-      SharedPreferences.getInstance().then((p) => p.setString(key, value));
+      SharedPreferences.getInstance().then((p) {
+        _prefs = p;
+        p.setString(key, value);
+      });
     } else {
       _prefs?.setString(key, value);
     }
@@ -34,10 +38,28 @@ class StorageService {
   /// Removes a key from persistent storage.
   static void remove(String key) {
     if (_prefs == null) {
-      SharedPreferences.getInstance().then((p) => p.remove(key));
+      SharedPreferences.getInstance().then((p) {
+        _prefs = p;
+        p.remove(key);
+      });
     } else {
       _prefs?.remove(key);
     }
+  }
+
+  /// Helper to get the currently active broker key (phone or UID).
+  static String get currentBrokerKey {
+    final sessionBrokerMobile = get('session_BROKER_mobile');
+    if (sessionBrokerMobile != null && sessionBrokerMobile.trim().isNotEmpty) {
+      return sessionBrokerMobile.trim();
+    }
+    final sessionBroker = get('session_BROKER');
+    if (sessionBroker != null && sessionBroker.trim().isNotEmpty) {
+      return sessionBroker.trim();
+    }
+    return FirebaseAuth.instance.currentUser?.phoneNumber ??
+        FirebaseAuth.instance.currentUser?.uid ??
+        'default_broker';
   }
 }
 
@@ -88,42 +110,63 @@ class AccountService {
 
   /// Retrieves the active logged-in user for a specific portal section.
   static UserAccount? getSessionUser(String section) {
-    final sessionIdentifier = StorageService.get('session_$section');
-    if (sessionIdentifier == null || sessionIdentifier.toString().isEmpty) {
+    final targetSection = section.trim().toUpperCase();
+    final sessionIdentifier =
+        StorageService.get('session_${targetSection}_mobile') ??
+            StorageService.get('session_$targetSection');
+    if (sessionIdentifier == null ||
+        sessionIdentifier.toString().trim().isEmpty) {
       return null;
     }
+
     final clean = sessionIdentifier.toString().trim().toLowerCase();
     final accounts = getAllAccounts();
-    final targetSection = section.trim().toUpperCase();
 
-    try {
-      return accounts.firstWhere(
-        (a) =>
-            a.section.trim().toUpperCase() == targetSection &&
-            (a.mobile.trim() == clean || a.email.trim().toLowerCase() == clean),
-      );
-    } catch (_) {
-      return null;
+    for (final a in accounts) {
+      if (a.section.trim().toUpperCase() == targetSection &&
+          (a.mobile.trim() == clean || a.email.trim().toLowerCase() == clean)) {
+        return a;
+      }
     }
+
+    // Fallback to session keys if account list cache was cleared
+    final savedName = StorageService.get('session_${targetSection}_name');
+    final savedMobile = StorageService.get('session_${targetSection}_mobile') ??
+        sessionIdentifier.toString().trim();
+    if (savedName != null && savedName.trim().isNotEmpty) {
+      return UserAccount(
+        name: savedName.trim(),
+        mobile: savedMobile.trim(),
+        email:
+            (StorageService.get('session_${targetSection}_email') ?? '').trim(),
+        address: (StorageService.get('session_${targetSection}_address') ?? '')
+            .trim(),
+        password:
+            (StorageService.get('session_${targetSection}_password') ?? '')
+                .trim(),
+        section: targetSection,
+      );
+    }
+
+    return null;
   }
 
-  /// Updates or inserts an account in local storage.
+  /// Updates or inserts an account in local storage (deduplicating any stale entries).
   static void updateAccount(UserAccount updated) {
     final accounts = getAllAccounts();
-    final index = accounts.indexWhere(
+    final targetSection = updated.section.trim().toUpperCase();
+    final cleanMobile = updated.mobile.trim();
+    final cleanEmail = updated.email.trim().toLowerCase();
+
+    accounts.removeWhere(
       (a) =>
-          a.section.trim().toUpperCase() ==
-              updated.section.trim().toUpperCase() &&
-          (a.mobile.trim() == updated.mobile.trim() ||
-              (a.email.isNotEmpty &&
-                  a.email.trim().toLowerCase() ==
-                      updated.email.trim().toLowerCase())),
+          a.section.trim().toUpperCase() == targetSection &&
+          (a.mobile.trim() == cleanMobile ||
+              (cleanEmail.isNotEmpty &&
+                  a.email.trim().toLowerCase() == cleanEmail)),
     );
-    if (index != -1) {
-      accounts[index] = updated;
-    } else {
-      accounts.add(updated);
-    }
+
+    accounts.add(updated);
     saveAccounts(accounts);
   }
 
@@ -150,38 +193,97 @@ class AccountService {
     final accounts = getAllAccounts();
     final cleanOldMobile = oldMobile.trim();
     final cleanOldEmail = oldEmail.trim().toLowerCase();
+    final cleanNewMobile = updatedAccount.mobile.trim();
+    final cleanNewEmail = updatedAccount.email.trim().toLowerCase();
     final targetSection = updatedAccount.section.trim().toUpperCase();
 
-    // Find the record using the old identifiers
-    final index = accounts.indexWhere(
+    accounts.removeWhere(
       (a) =>
           a.section.trim().toUpperCase() == targetSection &&
           (a.mobile.trim() == cleanOldMobile ||
+              a.mobile.trim() == cleanNewMobile ||
               (cleanOldEmail.isNotEmpty &&
-                  a.email.trim().toLowerCase() == cleanOldEmail)),
+                  a.email.trim().toLowerCase() == cleanOldEmail) ||
+              (cleanNewEmail.isNotEmpty &&
+                  a.email.trim().toLowerCase() == cleanNewEmail)),
     );
 
-    if (index != -1) {
-      accounts[index] = updatedAccount;
-    } else {
-      // Clean up any duplicates with the new credentials
-      accounts.removeWhere(
-        (a) =>
-            a.section.trim().toUpperCase() == targetSection &&
-            (a.mobile.trim() == updatedAccount.mobile.trim() ||
-                (updatedAccount.email.isNotEmpty &&
-                    a.email.trim().toLowerCase() ==
-                        updatedAccount.email.trim().toLowerCase())),
-      );
-      accounts.add(updatedAccount);
-    }
-
+    accounts.add(updatedAccount);
     saveAccounts(accounts);
   }
 }
 
 // =============================================================
-// 3. LOCAL NOTIFICATION SERVICE
+// 3. BROKER-ISOLATED PARTY SERVICE (LOCAL CACHE)
+// =============================================================
+class BrokerPartyService {
+  static String _getPartyStorageKey([String? brokerKey]) {
+    final key = (brokerKey != null && brokerKey.isNotEmpty)
+        ? brokerKey.trim()
+        : StorageService.currentBrokerKey;
+    return 'broker_parties_$key';
+  }
+
+  /// Retrieves only this broker's buyers and sellers from local cache.
+  static List<Map<String, dynamic>> getParties([String? brokerKey]) {
+    final raw = StorageService.get(_getPartyStorageKey(brokerKey));
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final List list = jsonDecode(raw);
+        return list.map((e) => Map<String, dynamic>.from(e)).toList();
+      } catch (e) {
+        debugPrint('Error parsing broker parties: $e');
+      }
+    }
+    return [];
+  }
+
+  /// Saves a party (buyer or seller) to the broker's local list.
+  static void saveParty(Map<String, dynamic> partyData, [String? brokerKey]) {
+    final list = getParties(brokerKey);
+    final mobile = (partyData['mobile'] ?? '').toString().trim();
+    final index =
+        list.indexWhere((p) => p['mobile'].toString().trim() == mobile);
+
+    if (index != -1) {
+      list[index] = partyData;
+    } else {
+      list.add(partyData);
+    }
+
+    StorageService.save(
+      _getPartyStorageKey(brokerKey),
+      jsonEncode(list),
+    );
+  }
+
+  /// Removes a party from this broker's local directory.
+  static void deleteParty(String partyMobile, [String? brokerKey]) {
+    final list = getParties(brokerKey);
+    final clean = partyMobile.trim();
+    list.removeWhere((p) => p['mobile'].toString().trim() == clean);
+    StorageService.save(
+      _getPartyStorageKey(brokerKey),
+      jsonEncode(list),
+    );
+  }
+
+  /// Finds a specific party by mobile for this broker.
+  static Map<String, dynamic>? findPartyByMobile(String mobile,
+      [String? brokerKey]) {
+    final clean = mobile.trim();
+    final list = getParties(brokerKey);
+    for (final p in list) {
+      if (p['mobile'].toString().trim() == clean) {
+        return p;
+      }
+    }
+    return null;
+  }
+}
+
+// =============================================================
+// 4. NOTIFICATION SERVICE
 // =============================================================
 class NotificationService {
   /// Loads all notifications from local storage.
@@ -229,8 +331,13 @@ class NotificationService {
         .toList();
   }
 
-  /// Clears notifications targeted to a specific phone number.
-  static void clearForMobile(String mobile) {
+  /// Returns notifications targeted to the active broker session.
+  static List<AppNotification> getForCurrentBroker() {
+    return getForMobile(StorageService.currentBrokerKey);
+  }
+
+  /// Clears notifications targeted to a specific phone number (both local and Firestore).
+  static Future<void> clearForMobile(String mobile) async {
     final cleanMobile = mobile.trim();
     final list = getAllNotifications();
     list.removeWhere((n) => n.targetMobile.trim() == cleanMobile);
@@ -238,11 +345,21 @@ class NotificationService {
       'mandi_notifications',
       jsonEncode(list.map((n) => n.toJson()).toList()),
     );
+
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('notifications')
+          .where('targetMobile', isEqualTo: cleanMobile)
+          .get();
+      for (final doc in snap.docs) {
+        await doc.reference.delete();
+      }
+    } catch (_) {}
   }
 }
 
 // =============================================================
-// 4. WHATSAPP TRANSACTION MESSAGING SERVICE
+// 5. WHATSAPP TRANSACTION MESSAGING SERVICE
 // =============================================================
 class WhatsAppService {
   /// Generates the default deal confirmation template.
@@ -273,34 +390,22 @@ _कृपया अपने पोर्टल में लॉगिन क�
   }) async {
     final encodedText = Uri.encodeComponent(message);
 
-    // Primary: Direct native app intent (bypasses browser redirects)
     final nativeUri =
         Uri.parse('whatsapp://send?phone=$cleanMobile&text=$encodedText');
-
-    // Secondary: Official WhatsApp universal API endpoint
     final apiUri = Uri.parse(
         'https://api.whatsapp.com/send?phone=$cleanMobile&text=$encodedText');
-
-    // Fallback: Standard shortlink
     final waMeUri = Uri.parse('https://wa.me/$cleanMobile?text=$encodedText');
 
     try {
-      // 1. Try native intent first
       if (await canLaunchUrl(nativeUri)) {
         return await launchUrl(nativeUri, mode: LaunchMode.externalApplication);
       }
-
-      // 2. Try official API intent
       if (await canLaunchUrl(apiUri)) {
         return await launchUrl(apiUri, mode: LaunchMode.externalApplication);
       }
-
-      // 3. Try standard wa.me redirect
       if (await canLaunchUrl(waMeUri)) {
         return await launchUrl(waMeUri, mode: LaunchMode.externalApplication);
       }
-
-      // 4. Force launch without pre-check (handles strict Android 11+ permission delays)
       return await launchUrl(nativeUri,
           mode: LaunchMode.externalNonBrowserApplication);
     } catch (e) {
@@ -402,114 +507,168 @@ _कृपया अपने पोर्टल में लॉगिन क�
 }
 
 // =============================================================
-// 5. STORAGE & DIALOG HELPERS
+// 6. SAUDA STORAGE HELPERS (BROKER-SCOPED)
 // =============================================================
 
-/// Updates a trade record directly in local storage.
+/// Updates or creates a trade record in local storage.
 void updateSaudaInStorage(MandiSaudaModel updated) {
   final raw = StorageService.get('mandi_saudas');
+  List<MandiSaudaModel> all = [];
   if (raw != null && raw.isNotEmpty) {
     try {
       final List list = jsonDecode(raw);
-      final all = list.map((e) => MandiSaudaModel.fromJson(e)).toList();
-      final index = all.indexWhere((s) => s.id == updated.id);
-      if (index != -1) {
-        all[index] = updated;
-        StorageService.save(
-          'mandi_saudas',
-          jsonEncode(all.map((s) => s.toJson()).toList()),
-        );
-      }
+      all = list.map((e) => MandiSaudaModel.fromJson(e)).toList();
     } catch (e) {
-      debugPrint('Error updating sauda in local storage: $e');
+      debugPrint('Error reading saudas from local storage: $e');
     }
+  }
+
+  final index = all.indexWhere((s) => s.id == updated.id);
+  if (index != -1) {
+    all[index] = updated;
+  } else {
+    all.add(updated);
+  }
+
+  StorageService.save(
+    'mandi_saudas',
+    jsonEncode(all.map((s) => s.toJson()).toList()),
+  );
+}
+
+/// Retrieves saudas belonging specifically to a broker from local storage.
+List<MandiSaudaModel> getSaudasForBroker([String? brokerMobile]) {
+  final raw = StorageService.get('mandi_saudas');
+  if (raw == null || raw.isEmpty) return [];
+
+  final cleanBroker = (brokerMobile != null && brokerMobile.isNotEmpty)
+      ? brokerMobile.trim()
+      : StorageService.currentBrokerKey;
+
+  try {
+    final List list = jsonDecode(raw);
+    return list
+        .map((e) => MandiSaudaModel.fromJson(e))
+        .where((s) =>
+            s.brokerMobile.trim().isEmpty ||
+            s.brokerMobile.trim() == cleanBroker)
+        .toList();
+  } catch (e) {
+    debugPrint('Error getting saudas for broker: $e');
+    return [];
   }
 }
 
-/// Displays an in-app notifications modal dialog.
+/// Displays an in-app notifications modal dialog (merges live Firestore + local notifications).
 void showNotificationDialog(BuildContext context, String userMobile) {
-  final notifications = NotificationService.getForMobile(userMobile);
+  final cleanMobile = userMobile.trim();
 
   showDialog(
     context: context,
-    builder: (ctx) => AlertDialog(
-      title: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          const Row(
+    builder: (ctx) => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('notifications')
+          .where('targetMobile', isEqualTo: cleanMobile)
+          .snapshots(),
+      builder: (context, snapshot) {
+        final localList = NotificationService.getForMobile(cleanMobile);
+        final Map<String, AppNotification> mergedMap = {
+          for (var n in localList) n.id: n,
+        };
+
+        if (snapshot.hasData && snapshot.data != null) {
+          for (var doc in snapshot.data!.docs) {
+            final data = doc.data();
+            data['id'] = doc.id;
+            final notif = AppNotification.fromJson(data);
+            mergedMap[notif.id] = notif;
+          }
+        }
+
+        final notifications = mergedMap.values.toList()
+          ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+
+        return AlertDialog(
+          title: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Icon(Icons.notifications_active, color: Color(0xFF0F766E)),
-              SizedBox(width: 8),
-              Text(
-                'Notifications',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              const Row(
+                children: [
+                  Icon(Icons.notifications_active, color: Color(0xFF0F766E)),
+                  SizedBox(width: 8),
+                  Text(
+                    'Notifications',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                ],
               ),
+              if (notifications.isNotEmpty)
+                TextButton(
+                  onPressed: () async {
+                    await NotificationService.clearForMobile(cleanMobile);
+                    if (ctx.mounted) {
+                      Navigator.pop(ctx);
+                    }
+                  },
+                  child: const Text(
+                    'Clear All',
+                    style: TextStyle(fontSize: 12, color: Colors.red),
+                  ),
+                ),
             ],
           ),
-          if (notifications.isNotEmpty)
+          content: SizedBox(
+            width: 420,
+            child: notifications.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(24.0),
+                    child: Text(
+                      'No notifications right now.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  )
+                : ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: notifications.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final n = notifications[index];
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          n.title,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        subtitle: Text(
+                          '${n.message}\n${n.timestamp.day.toString().padLeft(2, '0')}/${n.timestamp.month.toString().padLeft(2, '0')}/${n.timestamp.year} ${n.timestamp.hour.toString().padLeft(2, '0')}:${n.timestamp.minute.toString().padLeft(2, '0')}',
+                          style: const TextStyle(fontSize: 11.5),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          actions: [
             TextButton(
-              onPressed: () {
-                NotificationService.clearForMobile(userMobile);
-                Navigator.pop(ctx);
-              },
-              child: const Text(
-                'Clear All',
-                style: TextStyle(fontSize: 12, color: Colors.red),
-              ),
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('CLOSE'),
             ),
-        ],
-      ),
-      content: SizedBox(
-        width: 420,
-        child: notifications.isEmpty
-            ? const Padding(
-                padding: EdgeInsets.all(24.0),
-                child: Text(
-                  'No notifications right now.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey),
-                ),
-              )
-            : ListView.separated(
-                shrinkWrap: true,
-                itemCount: notifications.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (context, index) {
-                  final n = notifications[index];
-                  return ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text(
-                      n.title,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
-                        color: Colors.black87,
-                      ),
-                    ),
-                    subtitle: Text(
-                      '${n.message}\n${n.timestamp.day.toString().padLeft(2, '0')}/${n.timestamp.month.toString().padLeft(2, '0')}/${n.timestamp.year} ${n.timestamp.hour.toString().padLeft(2, '0')}:${n.timestamp.minute.toString().padLeft(2, '0')}',
-                      style: const TextStyle(fontSize: 11.5),
-                    ),
-                  );
-                },
-              ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text('CLOSE'),
-        ),
-      ],
+          ],
+        );
+      },
     ),
   );
 }
 
 // =============================================================
-// APP UPDATE SERVICE (FIRESTORE VERSION CHECK)
+// 7. APP UPDATE SERVICE (FIRESTORE VERSION CHECK)
 // =============================================================
 class AppUpdateService {
-  // Current hardcoded app version matching pubspec.yaml
-  static const String currentVersion = '1.0.0';
+  static const String currentVersion = '1.0.6';
 
   static Future<void> checkForUpdates(BuildContext context) async {
     try {
@@ -521,11 +680,13 @@ class AppUpdateService {
       if (!doc.exists || doc.data() == null) return;
 
       final data = doc.data()!;
-      final String latestVersion = data['latest_version'] ?? currentVersion;
-      final bool forceUpdate = data['force_update'] ?? false;
-      final String downloadUrl = data['download_url'] ?? '';
-      final String releaseNotes = data['release_notes'] ??
-          'A new update is available with improvements.';
+      final String latestVersion =
+          (data['latest_version'] ?? currentVersion).toString().trim();
+      final bool forceUpdate = data['force_update'] == true;
+      final String downloadUrl = (data['download_url'] ?? '').toString().trim();
+      final String releaseNotes = (data['release_notes'] ??
+              'A new update is available with improvements.')
+          .toString();
 
       if (_isUpdateAvailable(currentVersion, latestVersion) &&
           context.mounted) {
@@ -599,14 +760,17 @@ class AppUpdateService {
   }
 
   static bool _isUpdateAvailable(String current, String latest) {
-    List<int> currParts =
-        current.split('.').map((e) => int.tryParse(e) ?? 0).toList();
-    List<int> latestParts =
-        latest.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    final cleanCurrent = current.split('+').first.trim();
+    final cleanLatest = latest.split('+').first.trim();
+
+    final List<int> currParts =
+        cleanCurrent.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    final List<int> latestParts =
+        cleanLatest.split('.').map((e) => int.tryParse(e) ?? 0).toList();
 
     for (int i = 0; i < 3; i++) {
-      int curr = i < currParts.length ? currParts[i] : 0;
-      int lat = i < latestParts.length ? latestParts[i] : 0;
+      final int curr = i < currParts.length ? currParts[i] : 0;
+      final int lat = i < latestParts.length ? latestParts[i] : 0;
       if (lat > curr) return true;
       if (lat < curr) return false;
     }
