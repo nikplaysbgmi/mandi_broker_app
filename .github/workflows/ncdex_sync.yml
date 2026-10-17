@@ -1,32 +1,33 @@
-name: Update NCDEX Live Bhav
+name: Sync NCDEX Rates
 
 on:
   schedule:
-    # Runs every 15 minutes between 03:30 and 11:30 UTC (09:00 AM to 05:00 PM IST), Monday to Friday
-    - cron: '*/15 3-11 * * 1-5'
-  workflow_dispatch: # Allows manual trigger from GitHub anytime
+    # Runs every 15 minutes, Monday through Friday
+    - cron: '*/15 * * * 1-5'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
 
 jobs:
-  update-bhav:
-    runs-on: ubuntu-latest
+  scrape-and-sync:
+    # Pinning to ubuntu-24.04 ensures stability and avoids unexpected runner changes
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
-          cd scripts/ncdex_updater
-          npm install
+          npm ci || npm install puppeteer firebase-admin
 
-      - name: Fetch and Sync Rates
+      - name: Run NCDEX Scraper
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
-          node scripts/ncdex_updater/fetch_ncdex.js
+          node fetch_ncdex.js
           
