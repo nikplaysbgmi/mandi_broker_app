@@ -1,5 +1,6 @@
 import 'dart:math';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -82,6 +83,71 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
+  void _promptAdminPin(BuildContext context) {
+    final pinController = TextEditingController();
+    const String masterPin = "2740157";
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Row(
+          children: [
+            Icon(Icons.admin_panel_settings, color: Color(0xFFFF5722)),
+            SizedBox(width: 8),
+            Text(
+              'Master Admin Access',
+              style: TextStyle(color: Colors.white, fontSize: 16),
+            ),
+          ],
+        ),
+        content: TextField(
+          controller: pinController,
+          keyboardType: TextInputType.number,
+          obscureText: true,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: 'Enter 4-digit Master PIN',
+            hintStyle: TextStyle(color: Colors.white38),
+            filled: true,
+            fillColor: Color(0xFF2B2B2B),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFFF5722),
+            ),
+            onPressed: () {
+              if (pinController.text.trim() == masterPin) {
+                Navigator.pop(ctx);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const AdminUsersListScreen(),
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Incorrect Master PIN! Access denied.'),
+                    backgroundColor: Colors.redAccent,
+                  ),
+                );
+              }
+            },
+            child: const Text('Enter', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _routeToSection(BuildContext context, String sectionName) {
     final existingUser = AccountService.getSessionUser(sectionName);
     if (existingUser != null) {
@@ -111,235 +177,365 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  void _openMainMenuProfileDialog() {
-    final allAccounts = AccountService.getAllAccounts();
-    final brokerUser = AccountService.getSessionUser('BROKER');
-    final buyerUser = AccountService.getSessionUser('BUYER');
-    final sellerUser = AccountService.getSessionUser('SELLER');
-    final billUser = AccountService.getSessionUser('BILL GENERATOR');
-
-    final activeUser = brokerUser ?? buyerUser ?? sellerUser ?? billUser;
-
-    showDialog(
+  Future<void> _confirmRemoveDeviceAccount(
+    BuildContext context,
+    StateSetter setDialogState,
+    UserAccount account,
+  ) async {
+    final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        backgroundColor: const Color(0xFF1E293B),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         title: const Row(
           children: [
-            Icon(Icons.account_circle, color: Color(0xFF14B8A6), size: 28),
-            SizedBox(width: 10),
+            Icon(Icons.no_accounts_outlined, color: Colors.redAccent, size: 22),
+            SizedBox(width: 8),
             Text(
-              'User Profile & Accounts',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+              'Remove from Device',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold),
             ),
           ],
         ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (activeUser != null) ...[
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF14B8A6).withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: const Color(0xFF14B8A6).withValues(alpha: 0.3),
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
+        content: Text(
+          'Remove ${account.name} (${account.section} • ${account.mobile}) from this device\'s quick login list?\n\nThis will NOT delete your cloud account.',
+          style:
+              const TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('CANCEL', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('REMOVE',
+                style: TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      final all = AccountService.getAllAccounts();
+      all.removeWhere(
+        (a) =>
+            a.mobile.trim() == account.mobile.trim() &&
+            a.section.trim().toUpperCase() ==
+                account.section.trim().toUpperCase(),
+      );
+      AccountService.saveAccounts(all);
+
+      // If active session belongs to this removed account, clear it
+      final activeSec = account.section.toUpperCase();
+      if (StorageService.get('session_${activeSec}_mobile') == account.mobile) {
+        StorageService.remove('session_$activeSec');
+        StorageService.remove('session_${activeSec}_name');
+        StorageService.remove('session_${activeSec}_mobile');
+        StorageService.remove('session_${activeSec}_email');
+        StorageService.remove('session_${activeSec}_address');
+      }
+
+      setDialogState(() {});
+      if (mounted) setState(() {});
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Removed ${account.name} from this device.'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
+  void _openMainMenuProfileDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final allAccounts = AccountService.getAllAccounts();
+          final brokerUser = AccountService.getSessionUser('BROKER');
+          final buyerUser = AccountService.getSessionUser('BUYER');
+          final sellerUser = AccountService.getSessionUser('SELLER');
+          final billUser = AccountService.getSessionUser('BILL GENERATOR');
+
+          final activeUser = brokerUser ?? buyerUser ?? sellerUser ?? billUser;
+
+          return AlertDialog(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.account_circle, color: Color(0xFF14B8A6), size: 28),
+                SizedBox(width: 10),
+                Text(
+                  'User Profile & Accounts',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+                ),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (activeUser != null) ...[
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF14B8A6).withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: const Color(0xFF14B8A6).withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          CircleAvatar(
-                            radius: 18,
-                            backgroundColor: const Color(0xFF14B8A6),
-                            child: Text(
-                              activeUser.name.isNotEmpty
-                                  ? activeUser.name[0].toUpperCase()
-                                  : 'U',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  activeUser.name,
+                          Row(
+                            children: [
+                              CircleAvatar(
+                                radius: 18,
+                                backgroundColor: const Color(0xFF14B8A6),
+                                child: Text(
+                                  activeUser.name.isNotEmpty
+                                      ? activeUser.name[0].toUpperCase()
+                                      : 'U',
                                   style: const TextStyle(
+                                    color: Colors.white,
                                     fontWeight: FontWeight.bold,
-                                    fontSize: 15,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                Text(
-                                  activeUser.section.toUpperCase(),
-                                  style: const TextStyle(
-                                    color: Color(0xFF0F766E),
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 11,
                                   ),
                                 ),
-                              ],
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      activeUser.name,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 15,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    Text(
+                                      activeUser.section.toUpperCase(),
+                                      style: const TextStyle(
+                                        color: Color(0xFF0F766E),
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const Divider(height: 18),
+                          Text(
+                            'Mobile: ${activeUser.mobile}',
+                            style: const TextStyle(fontSize: 12.5),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            'Email: ${activeUser.email.isNotEmpty ? activeUser.email : "Not Provided"}',
+                            style: const TextStyle(fontSize: 12.5),
+                          ),
+                          if (activeUser.address.isNotEmpty) ...[
+                            const SizedBox(height: 3),
+                            Text(
+                              'Address: ${activeUser.address}',
+                              style: const TextStyle(fontSize: 12.5),
                             ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red.shade600,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      onPressed: () {
+                        for (final sec in [
+                          'BROKER',
+                          'BUYER',
+                          'SELLER',
+                          'BILL GENERATOR'
+                        ]) {
+                          StorageService.remove('session_$sec');
+                          StorageService.remove('session_${sec}_name');
+                          StorageService.remove('session_${sec}_mobile');
+                          StorageService.remove('session_${sec}_email');
+                          StorageService.remove('session_${sec}_address');
+                        }
+                        StorageService.remove(
+                            'session_BILL_GENERATOR_UNLOCKED');
+                        setDialogState(() {});
+                        if (mounted) setState(() {});
+                        Navigator.pop(ctx);
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                                'Logged out of active session successfully.'),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.logout, size: 16),
+                      label: const Text('LOGOUT ACTIVE SESSION'),
+                    ),
+                  ] else ...[
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.grey.shade300),
+                      ),
+                      child: const Column(
+                        children: [
+                          Icon(Icons.person_outline,
+                              size: 36, color: Colors.grey),
+                          SizedBox(height: 8),
+                          Text(
+                            'No Active User Logged In',
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 14),
+                          ),
+                          SizedBox(height: 4),
+                          Text(
+                            'Tap any of the portal cards to sign in to your account.',
+                            textAlign: TextAlign.center,
+                            style:
+                                TextStyle(fontSize: 12, color: Colors.black54),
                           ),
                         ],
                       ),
-                      const Divider(height: 18),
-                      Text(
-                        'Mobile: ${activeUser.mobile}',
-                        style: const TextStyle(fontSize: 12.5),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        'Email: ${activeUser.email.isNotEmpty ? activeUser.email : "Not Provided"}',
-                        style: const TextStyle(fontSize: 12.5),
-                      ),
-                      if (activeUser.address.isNotEmpty) ...[
-                        const SizedBox(height: 3),
+                    ),
+                  ],
+                  if (allAccounts.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Saved Device Accounts:',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
                         Text(
-                          'Address: ${activeUser.address}',
-                          style: const TextStyle(fontSize: 12.5),
+                          '${allAccounts.length} saved',
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.black45),
                         ),
                       ],
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 14),
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red.shade600,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
                     ),
-                  ),
-                  onPressed: () {
-                    for (final sec in [
-                      'BROKER',
-                      'BUYER',
-                      'SELLER',
-                      'BILL GENERATOR'
-                    ]) {
-                      StorageService.remove('session_$sec');
-                      StorageService.remove('session_${sec}_name');
-                      StorageService.remove('session_${sec}_mobile');
-                      StorageService.remove('session_${sec}_email');
-                      StorageService.remove('session_${sec}_address');
-                    }
-                    StorageService.remove('session_BILL_GENERATOR_UNLOCKED');
-                    Navigator.pop(ctx);
-                    if (mounted) setState(() {});
-                    if (!mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content:
-                            Text('Logged out of active session successfully.'),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.logout, size: 16),
-                  label: const Text('LOGOUT ACTIVE SESSION'),
-                ),
-              ] else ...[
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade100,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.grey.shade300),
-                  ),
-                  child: const Column(
-                    children: [
-                      Icon(Icons.person_outline, size: 36, color: Colors.grey),
-                      SizedBox(height: 8),
-                      Text(
-                        'No Active User Logged In',
-                        style: TextStyle(
-                            fontWeight: FontWeight.bold, fontSize: 14),
-                      ),
-                      SizedBox(height: 4),
-                      Text(
-                        'Tap any of the portal cards to sign in to your account.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 12, color: Colors.black54),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-              if (allAccounts.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                const Text(
-                  'Saved Device Accounts:',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                ),
-                const SizedBox(height: 6),
-                ...allAccounts.map((acc) {
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(8),
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        _routeToSection(context, acc.section.toUpperCase());
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade50,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.grey.shade300),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                    const SizedBox(height: 6),
+                    ...allAccounts.map((acc) {
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(8),
+                            onTap: () {
+                              Navigator.pop(ctx);
+                              _routeToSection(
+                                  context, acc.section.toUpperCase());
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 8),
+                              child: Row(
                                 children: [
-                                  Text(
-                                    acc.name,
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 12.5),
-                                    overflow: TextOverflow.ellipsis,
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          acc.name,
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        Text(
+                                          '${acc.section} • ${acc.mobile}',
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.black54,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                  Text(
-                                    '${acc.section} • ${acc.mobile}',
-                                    style: const TextStyle(
-                                        fontSize: 11, color: Colors.black54),
+                                  // REMOVE FROM DEVICE BUTTON
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.delete_outline_rounded,
+                                      size: 19,
+                                      color: Colors.redAccent,
+                                    ),
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(
+                                        minWidth: 32, minHeight: 32),
+                                    tooltip: 'Remove from device',
+                                    onPressed: () =>
+                                        _confirmRemoveDeviceAccount(
+                                      context,
+                                      setDialogState,
+                                      acc,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  const Icon(
+                                    Icons.chevron_right,
+                                    size: 18,
+                                    color: Colors.grey,
                                   ),
                                 ],
                               ),
                             ),
-                            const Icon(Icons.chevron_right,
-                                size: 16, color: Colors.grey),
-                          ],
+                          ),
                         ),
-                      ),
-                    ),
-                  );
-                }),
-              ],
+                      );
+                    }),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('CLOSE'),
+              ),
             ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('CLOSE'),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
@@ -380,39 +576,44 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 6,
-                              ),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF10B981)
-                                    .withValues(alpha: 0.15),
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(
-                                  color: const Color(0xFF10B981)
-                                      .withValues(alpha: 0.35),
+                            // Secret Admin Trigger: Long-press this badge to enter Master PIN
+                            GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onLongPress: () => _promptAdminPin(context),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 6,
                                 ),
-                              ),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.verified,
-                                    size: 13,
-                                    color: Color(0xFF10B981),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF10B981)
+                                      .withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(
+                                    color: const Color(0xFF10B981)
+                                        .withValues(alpha: 0.35),
                                   ),
-                                  SizedBox(width: 5),
-                                  Text(
-                                    'APMC • E-MANDI NETWORK',
-                                    style: TextStyle(
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.verified,
+                                      size: 13,
                                       color: Color(0xFF10B981),
-                                      fontSize: 10.5,
-                                      fontWeight: FontWeight.w700,
-                                      letterSpacing: 0.7,
                                     ),
-                                  ),
-                                ],
+                                    SizedBox(width: 5),
+                                    Text(
+                                      'Nik_jodhpur• 2026',
+                                      style: TextStyle(
+                                        color: Color(0xFF10B981),
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w700,
+                                        letterSpacing: 0.7,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                             IconButton.filledTonal(
@@ -588,7 +789,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                         ),
                         const SizedBox(height: 20),
                         const Text(
-                          'Broker Directory Table • Visible Broker Info • Custom WhatsApp Templates',
+                          'Developer- Nik_jodhpur • Mob: 9983325558 • Responsible For Nothing • Only For Educational Purpose • Thnaks for support ',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Color(0xFF475569),
@@ -737,6 +938,440 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// =============================================================
+// ADMIN USERS, PASSWORDS & SUBSCRIPTION DASHBOARD
+// =============================================================
+class AdminUsersListScreen extends StatefulWidget {
+  const AdminUsersListScreen({super.key});
+
+  @override
+  State<AdminUsersListScreen> createState() => _AdminUsersListScreenState();
+}
+
+class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
+  String _searchFilter = '';
+  bool _isAuthReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkAuth();
+  }
+
+  Future<void> _checkAuth() async {
+    try {
+      await CloudSyncService.ensureAuthSession();
+    } catch (e) {
+      debugPrint('Admin screen auth session check error: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isAuthReady = true);
+      }
+    }
+  }
+
+  Future<void> _toggleUserLock({
+    required String section,
+    required String mobile,
+    required bool currentLockedState,
+  }) async {
+    try {
+      await CloudSyncService.setLockStatus(
+        section: section,
+        mobile: mobile,
+        isLocked: !currentLockedState,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              !currentLockedState
+                  ? 'Account locked (Subscription overdue).'
+                  : 'Account unlocked (Access active).',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error updating account: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _confirmDeleteUser({
+    required String section,
+    required String mobile,
+    required String userName,
+  }) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title:
+            const Text('Confirm Delete', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'Are you sure you want to delete $userName ($mobile) from $section?',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        await CloudSyncService.purgeUserAccount(mobile, section: section);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Account $userName deleted successfully.')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Delete failed: $e')),
+          );
+        }
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0B1320),
+      appBar: AppBar(
+        title: const Text('ALL REGISTERED USERS & PASSWORDS'),
+        backgroundColor: const Color(0xFF16253B),
+        foregroundColor: Colors.white,
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: TextField(
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: 'Search by Mobile, Name, or Section...',
+                hintStyle: const TextStyle(color: Colors.white38),
+                prefixIcon: const Icon(Icons.search, color: Colors.white54),
+                filled: true,
+                fillColor: const Color(0xFF16253B),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+              ),
+              onChanged: (val) =>
+                  setState(() => _searchFilter = val.trim().toLowerCase()),
+            ),
+          ),
+          Expanded(
+            child: !_isAuthReady
+                ? const Center(
+                    child: CircularProgressIndicator(color: Color(0xFFFF5722)),
+                  )
+                : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    // Connects directly to users collection
+                    stream: FirebaseFirestore.instance
+                        .collection('users')
+                        .snapshots(),
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(
+                          child: CircularProgressIndicator(
+                              color: Color(0xFFFF5722)),
+                        );
+                      }
+
+                      if (snapshot.hasError) {
+                        return Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Text(
+                              'Error loading users: ${snapshot.error}',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.redAccent),
+                            ),
+                          ),
+                        );
+                      }
+
+                      final docs = snapshot.data?.docs ?? [];
+
+                      if (docs.isEmpty) {
+                        return const Center(
+                          child: Text(
+                            'No registered users in "users" collection.\nRegister an account to see it here.',
+                            textAlign: TextAlign.center,
+                            style:
+                                TextStyle(color: Colors.white54, height: 1.5),
+                          ),
+                        );
+                      }
+
+                      final filtered = docs.where((d) {
+                        final data = d.data();
+                        final name = (data['name'] ??
+                                data['userName'] ??
+                                data['firmName'] ??
+                                '')
+                            .toString()
+                            .toLowerCase();
+                        final mobile = (data['mobile'] ?? data['phone'] ?? d.id)
+                            .toString()
+                            .toLowerCase();
+                        final section =
+                            (data['section'] ?? '').toString().toLowerCase();
+
+                        if (_searchFilter.isEmpty) return true;
+                        return name.contains(_searchFilter) ||
+                            mobile.contains(_searchFilter) ||
+                            section.contains(_searchFilter);
+                      }).toList();
+
+                      if (filtered.isEmpty) {
+                        return const Center(
+                          child: Text(
+                            'No matching users found for this search.',
+                            style: TextStyle(color: Colors.white38),
+                          ),
+                        );
+                      }
+
+                      return ListView.separated(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        itemCount: filtered.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 10),
+                        itemBuilder: (context, index) {
+                          final doc = filtered[index];
+                          final data = doc.data();
+
+                          final String name = (data['name'] ??
+                                  data['userName'] ??
+                                  data['firmName'] ??
+                                  'Unnamed')
+                              .toString();
+                          final String mobile =
+                              (data['mobile'] ?? data['phone'] ?? '')
+                                      .toString()
+                                      .isNotEmpty
+                                  ? (data['mobile'] ?? data['phone']).toString()
+                                  : doc.id.split('_').last;
+                          final String password =
+                              (data['password'] ?? data['pin'] ?? 'N/A')
+                                  .toString();
+                          final String section = (data['section'] ??
+                                  (doc.id.contains('_')
+                                      ? doc.id.split('_').first
+                                      : 'GENERAL'))
+                              .toString()
+                              .toUpperCase();
+                          final String email = (data['email'] ?? '').toString();
+                          final bool isLocked = data['is_locked'] == true ||
+                              data['is_blocked'] == true ||
+                              data['subscription_due'] == true ||
+                              data['account_status'] == 'locked' ||
+                              data['account_status'] == 'suspended';
+
+                          return Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF131D2D),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: isLocked
+                                    ? Colors.red.shade900
+                                    : const Color(0xFF223249),
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        name,
+                                        style: const TextStyle(
+                                          color: Color(0xFF38BDF8),
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 3,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: isLocked
+                                            ? Colors.red.withValues(alpha: 0.15)
+                                            : Colors.green
+                                                .withValues(alpha: 0.15),
+                                        borderRadius: BorderRadius.circular(4),
+                                        border: Border.all(
+                                          color: isLocked
+                                              ? Colors.redAccent
+                                              : Colors.greenAccent,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        isLocked
+                                            ? 'LOCKED / DUE'
+                                            : 'ACTIVE SUBSCRIPTION',
+                                        style: TextStyle(
+                                          color: isLocked
+                                              ? Colors.redAccent
+                                              : Colors.greenAccent,
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const Divider(
+                                    color: Color(0xFF223249), height: 16),
+                                Row(
+                                  children: [
+                                    const Icon(Icons.badge_outlined,
+                                        size: 14, color: Colors.white54),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      'Portal: $section',
+                                      style: const TextStyle(
+                                          color: Colors.white70, fontSize: 13),
+                                    ),
+                                    const Spacer(),
+                                    const Icon(Icons.phone_android,
+                                        size: 14, color: Colors.white54),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      'ID: $mobile',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black26,
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.vpn_key_rounded,
+                                          size: 15, color: Color(0xFFFF5722)),
+                                      const SizedBox(width: 8),
+                                      const Text(
+                                        'Password / PIN: ',
+                                        style: TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 12.5),
+                                      ),
+                                      SelectableText(
+                                        password,
+                                        style: const TextStyle(
+                                          color: Color(0xFFFFCC80),
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.bold,
+                                          letterSpacing: 0.8,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                if (email.isNotEmpty) ...[
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    'Email: $email',
+                                    style: const TextStyle(
+                                        color: Colors.white38, fontSize: 11.5),
+                                  ),
+                                ],
+                                const SizedBox(height: 10),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.end,
+                                  children: [
+                                    TextButton.icon(
+                                      onPressed: () => _toggleUserLock(
+                                        section: section,
+                                        mobile: mobile,
+                                        currentLockedState: isLocked,
+                                      ),
+                                      icon: Icon(
+                                        isLocked
+                                            ? Icons.lock_open
+                                            : Icons.lock_outline,
+                                        size: 16,
+                                        color: isLocked
+                                            ? Colors.greenAccent
+                                            : Colors.orangeAccent,
+                                      ),
+                                      label: Text(
+                                        isLocked
+                                            ? 'Activate'
+                                            : 'Block / Overdue',
+                                        style: TextStyle(
+                                          color: isLocked
+                                              ? Colors.greenAccent
+                                              : Colors.orangeAccent,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    IconButton(
+                                      icon: const Icon(Icons.delete_outline,
+                                          size: 18, color: Colors.redAccent),
+                                      tooltip: 'Delete Account',
+                                      onPressed: () => _confirmDeleteUser(
+                                        section: section,
+                                        mobile: mobile,
+                                        userName: name,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+          ),
+        ],
       ),
     );
   }
@@ -976,7 +1611,7 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
   bool _obscurePin = true;
   bool _isLoading = false;
 
-  static const String adminSupportPhone = '+919876543210';
+  static const String adminSupportPhone = '+919983325558';
 
   @override
   void initState() {
@@ -1791,6 +2426,50 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     }
   }
 
+  Widget _buildStepIndicator(int step, String label) {
+    final isDone = _currentStep > step;
+    final isCurrent = _currentStep == step;
+
+    return Column(
+      children: [
+        CircleAvatar(
+          radius: 13,
+          backgroundColor: isDone || isCurrent
+              ? const Color(0xFF0F766E)
+              : Colors.grey.shade300,
+          child: isDone
+              ? const Icon(Icons.check, size: 13, color: Colors.white)
+              : Text(
+                  '$step',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: isCurrent ? Colors.white : Colors.grey.shade700,
+                  ),
+                ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 9.5,
+            fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+            color: isCurrent ? const Color(0xFF0F766E) : Colors.black54,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStepDivider(bool active) {
+    return Container(
+      width: 32,
+      height: 2,
+      margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
+      color: active ? const Color(0xFF0F766E) : Colors.grey.shade300,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -2041,50 +2720,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           ),
         ),
       ),
-    );
-  }
-
-  Widget _buildStepIndicator(int step, String label) {
-    final isDone = _currentStep > step;
-    final isCurrent = _currentStep == step;
-
-    return Column(
-      children: [
-        CircleAvatar(
-          radius: 13,
-          backgroundColor: isDone || isCurrent
-              ? const Color(0xFF0F766E)
-              : Colors.grey.shade300,
-          child: isDone
-              ? const Icon(Icons.check, size: 13, color: Colors.white)
-              : Text(
-                  '$step',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    color: isCurrent ? Colors.white : Colors.grey.shade700,
-                  ),
-                ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 9.5,
-            fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
-            color: isCurrent ? const Color(0xFF0F766E) : Colors.black54,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildStepDivider(bool active) {
-    return Container(
-      width: 32,
-      height: 2,
-      margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
-      color: active ? const Color(0xFF0F766E) : Colors.grey.shade300,
     );
   }
 }

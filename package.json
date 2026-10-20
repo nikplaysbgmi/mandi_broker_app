@@ -1,0 +1,31 @@
+{
+  "dependencies": {
+    "firebase-admin": "^14.5.0",
+    "puppeteer": "^25.14.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.34.7"
+  },
+  "name": "mandi_broker_app",
+  "version": "1.0.0",
+  "description": "A new Flutter project.",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://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@github.com/teamknclabs-bit/mandi_broker_app.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/teamknclabs-bit/mandi_broker_app/issues"
+  },
+  "homepage": "https://github.com/teamknclabs-bit/mandi_broker_app#readme"
+}

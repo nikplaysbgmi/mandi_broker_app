@@ -1026,7 +1026,7 @@ class UserProfileEditScreen extends StatefulWidget {
 }
 
 class _UserProfileEditScreenState extends State<UserProfileEditScreen> {
-  static const String adminSupportPhone = '+919876543210';
+  static const String adminSupportPhone = '+919983325558';
 
   late TextEditingController _nameCtrl;
   late TextEditingController _addrCtrl;

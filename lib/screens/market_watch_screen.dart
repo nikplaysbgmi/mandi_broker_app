@@ -56,7 +56,8 @@ class _MarketWatchScreenState extends State<MarketWatchScreen> {
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFFF5722)),
+              backgroundColor: const Color(0xFFFF5722),
+            ),
             onPressed: () {
               if (pinController.text.trim() == masterPin) {
                 Navigator.pop(ctx);
@@ -138,7 +139,7 @@ class _MarketWatchScreenState extends State<MarketWatchScreen> {
     return OfflineBannerWrapper(
       child: DefaultTabController(
         length: 3,
-        initialIndex: 1, // Default to NCDEX tab
+        initialIndex: 1, // Default to NCDEX Agri tab
         child: Scaffold(
           backgroundColor: Colors.black,
           appBar: AppBar(
@@ -428,50 +429,34 @@ class McxWatchList extends StatelessWidget {
 }
 
 // =============================================================
-// TAB 2: NCDEX WATCHLIST (PRESERVES GENUINE EXCHANGE EXPIRY)
+// TAB 2: NCDEX WATCHLIST (INTEGRATED WITH PUPPETEER UPDATER)
 // =============================================================
 class NcdexWatchList extends StatelessWidget {
   const NcdexWatchList({super.key});
 
-  static String _resolveExpiry(String? rawExpiry, int index, String symbol,
-      Map<String, int> symbolCounts) {
-    final count = symbolCounts[symbol] ?? 0;
-    symbolCounts[symbol] = count + 1;
-
-    final cleaned = rawExpiry?.replaceAll('-', ' ').trim().toUpperCase() ?? '';
-    // If Firestore already has a real date (e.g. "19 OCT 2026"), use it directly
-    if (cleaned.isNotEmpty &&
-        !cleaned.contains('NEAR') &&
-        !cleaned.contains('FAR')) {
-      return cleaned;
-    }
-
-    // Fallback automatic calculation only if rawExpiry is missing or 'NEAR'/'FAR'
-    final now = DateTime.now();
-    final nearBase = now.day > 20
-        ? DateTime(now.year, now.month + 1, 20)
-        : DateTime(now.year, now.month, 20);
-
-    const monthNames = [
-      'JAN',
-      'FEB',
-      'MAR',
-      'APR',
-      'MAY',
-      'JUN',
-      'JUL',
-      'AUG',
-      'SEP',
-      'OCT',
-      'NOV',
-      'DEC'
+  String _formatDate(DateTime dt) {
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
     ];
+    return '${dt.day.toString().padLeft(2, '0')} ${months[dt.month - 1]} ${dt.year}';
+  }
 
-    final targetDate = (count == 0)
-        ? nearBase
-        : DateTime(nearBase.year, nearBase.month + 1, 20);
-
-    return '20 ${monthNames[targetDate.month - 1]} ${targetDate.year}';
+  String _formatTime(DateTime dt) {
+    final hour = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
+    final period = dt.hour >= 12 ? 'PM' : 'AM';
+    final minute = dt.minute.toString().padLeft(2, '0');
+    return '$hour:$minute $period';
   }
 
   @override
@@ -489,112 +474,197 @@ class NcdexWatchList extends StatelessWidget {
         }
 
         final docData = snapshot.data?.data();
+        final Timestamp? timestamp = docData?['updatedAt'] as Timestamp?;
         final List<dynamic> rates =
             (docData != null && docData['rates'] is List)
                 ? docData['rates'] as List<dynamic>
                 : <dynamic>[];
 
-        if (rates.isEmpty) {
-          return const Center(
-            child: Text(
-              'No NCDEX contracts available',
-              style: TextStyle(color: Colors.white38, fontSize: 14),
-            ),
-          );
-        }
+        final DateTime? updatedAt = timestamp?.toDate().toLocal();
 
-        final Map<String, int> symbolCounts = {};
-
-        return ListView.separated(
-          itemCount: rates.length,
-          separatorBuilder: (_, __) =>
-              const Divider(color: Color(0xFF141414), height: 1, thickness: 1),
-          itemBuilder: (context, index) {
-            final item = rates[index] as Map<String, dynamic>;
-            final String symbol = item['symbol']?.toString() ?? '';
-            final String expiry = _resolveExpiry(
-                item['expiry']?.toString(), index, symbol, symbolCounts);
-            final double ltp =
-                (item['ltp'] is num) ? (item['ltp'] as num).toDouble() : 0.0;
-            final double change = (item['change'] is num)
-                ? (item['change'] as num).toDouble()
-                : 0.0;
-
-            final bool isPositive = change > 0;
-            final bool isZero = change == 0;
-            final Color changeColor = isZero
-                ? const Color(0xFF00E676)
-                : (isPositive
-                    ? const Color(0xFF00E676)
-                    : const Color(0xFFFF3B30));
-
-            return Container(
-              color: Colors.black,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        return Column(
+          children: [
+            // Feed status banner
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: const BoxDecoration(
+                color: Color(0xFF141414),
+                border: Border(
+                  bottom: BorderSide(color: Color(0xFF262626), width: 1),
+                ),
+              ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.baseline,
-                      textBaseline: TextBaseline.alphabetic,
-                      children: [
-                        Text(
-                          symbol,
-                          style: const TextStyle(
-                            color: Color(0xFF29B6F6),
-                            fontWeight: FontWeight.w800,
-                            fontSize: 18,
-                            letterSpacing: 0.3,
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Flexible(
-                          child: Text(
-                            expiry,
-                            style: const TextStyle(
-                              color: Color(0xFF8E8E93),
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    mainAxisSize: MainAxisSize.min,
+                  Row(
                     children: [
-                      Text(
-                        ltp.toStringAsFixed(0),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 0.2,
-                        ),
+                      const Icon(
+                        Icons.sync,
+                        size: 15,
+                        color: Colors.white70,
                       ),
-                      const SizedBox(height: 2),
+                      const SizedBox(width: 6),
                       Text(
-                        isZero
-                            ? "(+0)"
-                            : (isPositive
-                                ? "(+${change.toStringAsFixed(0)})"
-                                : "(${change.toStringAsFixed(0)})"),
-                        style: TextStyle(
-                          color: changeColor,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
+                        updatedAt != null
+                            ? '${_formatDate(updatedAt)}  ${_formatTime(updatedAt)}'
+                            : 'NCDEX Official Feed',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
                     ],
                   ),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(
+                        color: const Color(0xFF00E676).withValues(alpha: 0.4),
+                      ),
+                    ),
+                    child: const Text(
+                      'कृषि जिंस (Agri Futures)',
+                      style: TextStyle(
+                        color: Color(0xFF00E676),
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
                 ],
               ),
-            );
-          },
+            ),
+            Expanded(
+              child: rates.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'No NCDEX contracts available',
+                        style: TextStyle(color: Colors.white38, fontSize: 14),
+                      ),
+                    )
+                  : ListView.separated(
+                      itemCount: rates.length,
+                      separatorBuilder: (_, __) => const Divider(
+                        color: Color(0xFF141414),
+                        height: 1,
+                        thickness: 1,
+                      ),
+                      itemBuilder: (context, index) {
+                        final item = rates[index] as Map<String, dynamic>;
+                        final String displayName = item['name']?.toString() ??
+                            item['symbol']?.toString() ??
+                            '';
+                        final String expiry =
+                            item['expiry']?.toString() ?? 'NEAR';
+
+                        final double ltp = (item['ltp'] is num)
+                            ? (item['ltp'] as num).toDouble()
+                            : 0.0;
+                        final double change = (item['change'] is num)
+                            ? (item['change'] as num).toDouble()
+                            : 0.0;
+                        final double percentChange =
+                            (item['percentChange'] is num)
+                                ? (item['percentChange'] as num).toDouble()
+                                : 0.0;
+                        final double spotPrice = (item['spotPrice'] is num)
+                            ? (item['spotPrice'] as num).toDouble()
+                            : 0.0;
+
+                        final bool isPositive = change > 0;
+                        final bool isZero = change == 0;
+                        final Color changeColor = isZero
+                            ? const Color(0xFF00E676)
+                            : (isPositive
+                                ? const Color(0xFF00E676)
+                                : const Color(0xFFFF3B30));
+
+                        return Container(
+                          color: Colors.black,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 14),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      displayName,
+                                      style: const TextStyle(
+                                        color: Color(0xFF29B6F6),
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 17,
+                                        letterSpacing: 0.3,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Row(
+                                      children: [
+                                        Text(
+                                          'Expiry: $expiry',
+                                          style: const TextStyle(
+                                            color: Color(0xFF8E8E93),
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                        if (spotPrice > 0) ...[
+                                          const SizedBox(width: 8),
+                                          Text(
+                                            '• Spot: ₹${spotPrice.toStringAsFixed(0)}',
+                                            style: const TextStyle(
+                                              color: Colors.white38,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    '₹${ltp.toStringAsFixed(0)}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.2,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    isZero
+                                        ? "(+0)"
+                                        : (isPositive
+                                            ? "(+${change.toStringAsFixed(0)} / ${percentChange.toStringAsFixed(2)}%)"
+                                            : "(${change.toStringAsFixed(0)} / ${percentChange.toStringAsFixed(2)}%)"),
+                                    style: TextStyle(
+                                      color: changeColor,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
         );
       },
     );

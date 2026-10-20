@@ -2871,7 +2871,7 @@ class BrokerProfileScreen extends StatefulWidget {
 }
 
 class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
-  static const String adminSupportPhone = '+919876543210';
+  static const String adminSupportPhone = '+919983325558';
 
   late TextEditingController _firmCtrl;
   late TextEditingController _addrCtrl;
