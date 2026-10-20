@@ -1,72 +1,44 @@
 const admin = require('firebase-admin');
 const puppeteer = require('puppeteer');
 
-// Helper to filter contracts strictly to the current or future months
-function isCurrentOrFutureMonth(expiryStr) {
-  if (!expiryStr || typeof expiryStr !== 'string') return true;
-
-  const clean = expiryStr.trim().toUpperCase();
-  const monthMap = {
-    'JAN': 0, 'FEB': 1, 'MAR': 2, 'APR': 3, 'MAY': 4, 'JUN': 5,
-    'JUL': 6, 'AUG': 7, 'SEP': 8, 'OCT': 9, 'NOV': 10, 'DEC': 11
-  };
-
-  const now = new Date();
-  const currentYear = now.getFullYear();
-  const currentMonth = now.getMonth(); // 0-indexed
-
-  // Match: "20-NOV-2026", "NOV 2026", "20 NOV 26"
-  const match = clean.match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*[\s\-_]*(\d{2,4})/i);
-  if (match) {
-    const month = monthMap[match[1].toUpperCase()];
-    let year = parseInt(match[2], 10);
-    if (year < 100) year += 2000;
-
-    if (year > currentYear) return true;
-    if (year === currentYear && month >= currentMonth) return true;
-    return false;
-  }
-
-  // Fallback match: DD-MM-YYYY or MM-YYYY
-  const numMatch = clean.match(/(\d{1,2})[\/\-](\d{2,4})/);
-  if (numMatch) {
-    let month = parseInt(numMatch[1], 10) - 1;
-    let year = parseInt(numMatch[2], 10);
-    if (year < 100) year += 2000;
-
-    if (year > currentYear) return true;
-    if (year === currentYear && month >= currentMonth) return true;
-    return false;
-  }
-
-  return true;
-}
+// Core commodities tracked in the app UI
+const TARGET_COMMODITIES = [
+  { key: 'JEERAUNJHA', patterns: ['JEERA', 'JEERAUNJHA'] },
+  { key: 'DHANIYA', patterns: ['DHANIYA', 'CORIANDER'] },
+  { key: 'TMCFGRNZM', patterns: ['TMCFGRNZM', 'TURMERIC'] },
+  { key: 'ISABGOL', patterns: ['ISABGOL', 'PSYLLIUM'] },
+  { key: 'FENNEL', patterns: ['FENNEL', 'SAUNF'] },
+  { key: 'FENUGREEK', patterns: ['FENUGREEK', 'METHI'] },
+  { key: 'GUARSEED10', patterns: ['GUARSEED', 'GUARSEED10'] },
+  { key: 'GUARGUM5', patterns: ['GUARGUM', 'GUARGUM5'] },
+  { key: 'CHANA', patterns: ['CHANA', 'GRAM'] },
+  { key: 'CASTOR', patterns: ['CASTOR', 'CASTORSEED'] },
+  { key: 'SOYABEAN', patterns: ['SOYABEAN', 'SOYBEAN'] },
+  { key: 'MUSTARD', patterns: ['MUSTARD', 'RMSEED'] }
+];
 
 async function run() {
-  console.log('🚀 [NCDEX Scraper] Starting live sync for current & future months...');
+  console.log('🚀 [NCDEX Scraper] Starting fetch for MarketWatch view...');
 
   if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-    console.error('❌ FATAL: FIREBASE_SERVICE_ACCOUNT secret missing!');
+    console.error('❌ FIREBASE_SERVICE_ACCOUNT missing!');
     process.exit(1);
   }
 
   try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    console.log(`📡 Connected to Firebase Project: ${serviceAccount.project_id}`);
-
     if (admin.apps.length === 0) {
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
       });
     }
   } catch (err) {
-    console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:', err.message);
+    console.error('❌ Service account parse error:', err.message);
     process.exit(1);
   }
 
   const db = admin.firestore();
 
-  // Launch Puppeteer with stable Ubuntu runner flags (removed crashpad-inducing flags)
   const browser = await puppeteer.launch({
     headless: true,
     args: [
@@ -85,97 +57,98 @@ async function run() {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
 
-    console.log('🌐 Loading NCDEX Live Quotes page...');
+    console.log('🌐 Loading NCDEX Live Quotes...');
     await page.goto('https://www.ncdex.com/market-watch/live_quotes', {
       waitUntil: 'domcontentloaded',
       timeout: 60000
     });
 
-    console.log('⏳ Waiting for table rows...');
     await page.waitForSelector('table tbody tr', { timeout: 45000 });
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 2500));
 
-    // Extract table rows
-    const rawRecords = await page.evaluate(() => {
+    // Scrape all table rows
+    const scrapedRows = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('table tbody tr'));
-      const parsed = [];
-
-      for (const row of rows) {
-        const cells = Array.from(row.querySelectorAll('td')).map(c => c.innerText.trim());
-        if (cells.length < 5) continue;
-
-        const symbol = cells[0] || '';
-        const expiry = cells[1] || '';
-        const open = cells[2] || '';
-        
-        let ltp = '';
-        let high = '';
-        let low = '';
-        let change = '';
-        let changePercent = '';
-        let volume = '';
-
-        if (cells.length >= 10) {
-          low = cells[3] || '';
-          ltp = cells[4] || cells[3] || '';
-          high = cells[5] || '';
-          change = cells[7] || '';
-          changePercent = cells[8] || '';
-          volume = cells[12] || cells[11] || '';
-        } else {
-          const midParts = (cells[3] || '').split(/\s+/);
-          if (midParts.length === 3) {
-            low = midParts[0];
-            ltp = midParts[1];
-            high = midParts[2];
-          } else {
-            ltp = cells[3] || cells[2] || '';
-          }
-          change = cells[5] || '';
-          volume = cells[6] || '';
-        }
-
-        if (symbol && symbol !== 'Product Name/Symbol') {
-          parsed.push({
-            symbol: symbol,
-            commodity: symbol,
-            expiry: expiry,
-            open: open.replace(/,/g, ''),
-            high: high.replace(/,/g, ''),
-            low: low.replace(/,/g, ''),
-            lastPrice: ltp.replace(/,/g, ''),
-            ltp: ltp.replace(/,/g, ''),
-            change: change.replace(/,/g, ''),
-            changePercent: changePercent.replace(/%/g, '').trim(),
-            volume: volume.replace(/,/g, '')
-          });
-        }
-      }
-
-      return parsed;
+      return rows.map(r => {
+        const cells = Array.from(r.querySelectorAll('td')).map(c => c.innerText.trim());
+        return cells;
+      }).filter(c => c.length >= 4);
     });
 
-    // Filter strictly to current and future month contracts
-    const filteredRecords = rawRecords.filter(item => isCurrentOrFutureMonth(item.expiry));
+    console.log(`📊 Total raw rows scraped: ${scrapedRows.length}`);
 
-    console.log(`📊 Extracted: ${rawRecords.length} total | Filtered (Current & Future): ${filteredRecords.length}`);
+    // Map rows to our target commodities, prioritizing the near month with actual trades
+    const commodityMap = new Map();
 
-    // Update Firestore market_watch/live_summary
-    console.log('💾 Writing data to Firestore: market_watch/live_summary...');
-    const nowTimestamp = admin.firestore.FieldValue.serverTimestamp();
+    for (const cells of scrapedRows) {
+      const rawSymbol = (cells[0] || '').toUpperCase();
+      const expiry = cells[1] || '';
 
+      // Find which target commodity this matches
+      const target = TARGET_COMMODITIES.find(t =>
+        t.patterns.some(p => rawSymbol.includes(p))
+      );
+
+      if (!target) continue;
+
+      // Extract price fields across different NCDEX column variations
+      let ltp = '0';
+      let change = '0';
+
+      if (cells.length >= 10) {
+        // [Symbol, Expiry, Open, Low, LTP, High, Close, Change, %Change, ...]
+        ltp = cells[4] || cells[3] || '0';
+        change = cells[7] || cells[6] || '0';
+      } else {
+        // Grouped column format
+        const combined = (cells[3] || '').split(/\s+/);
+        ltp = combined.length >= 2 ? combined[1] : (cells[3] || '0');
+        change = cells[5] || '0';
+      }
+
+      ltp = ltp.replace(/,/g, '').trim();
+      change = change.replace(/,/g, '').trim();
+
+      // Ensure valid numbers
+      const numLtp = parseFloat(ltp);
+      const numChange = parseFloat(change);
+
+      const entry = {
+        symbol: target.key,
+        name: target.key,
+        contract: 'NEAR',
+        expiry: expiry,
+        lastPrice: isNaN(numLtp) ? '0' : numLtp.toFixed(0),
+        ltp: isNaN(numLtp) ? '0' : numLtp.toFixed(0),
+        change: isNaN(numChange) ? '+0' : (numChange >= 0 ? `+${numChange.toFixed(0)}` : `${numChange.toFixed(0)}`),
+        isPositive: !isNaN(numChange) && numChange >= 0
+      };
+
+      // If we haven't stored this commodity yet, or if this row has an active price (> 0) while the stored one is 0
+      if (!commodityMap.has(target.key) || (numLtp > 0 && parseFloat(commodityMap.get(target.key).lastPrice) === 0)) {
+        commodityMap.set(target.key, entry);
+      }
+    }
+
+    // Build the ordered list matching the reference image order
+    const finalList = TARGET_COMMODITIES
+      .filter(t => commodityMap.has(t.key))
+      .map(t => commodityMap.get(t.key));
+
+    console.log(`✅ Ready to save ${finalList.length} near-month commodity cards.`);
+
+    const now = admin.firestore.FieldValue.serverTimestamp();
     await db.collection('market_watch').doc('live_summary').set({
-      commodities: filteredRecords,
-      rates: filteredRecords,
-      last_updated: nowTimestamp,
-      updatedAt: nowTimestamp,
-      status: 'active',
-      source: 'NCDEX'
+      commodities: finalList,
+      rates: finalList,
+      last_updated: now,
+      updatedAt: now,
+      status: 'active'
     }, { merge: true });
 
-    console.log('✅ Successfully updated Firestore with current & future month contracts!');
+    console.log('🎉 Successfully saved to Firestore market_watch/live_summary!');
   } catch (err) {
-    console.error('❌ Scraper error:', err.message);
+    console.error('❌ Error during run:', err.message);
     process.exit(1);
   } finally {
     await browser.close();
