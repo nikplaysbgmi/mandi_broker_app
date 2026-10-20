@@ -1,13 +1,11 @@
 const admin = require('firebase-admin');
 const puppeteer = require('puppeteer');
 
-// Helper to check if an expiry string is current month or in the future
+// Helper to filter contracts strictly to the current or future months
 function isCurrentOrFutureMonth(expiryStr) {
   if (!expiryStr || typeof expiryStr !== 'string') return true;
 
-  // NCDEX expiry formats are typically: "20-NOV-2026", "NOV 2026", "20 NOV 2026", or "20-11-2026"
   const clean = expiryStr.trim().toUpperCase();
-
   const monthMap = {
     'JAN': 0, 'FEB': 1, 'MAR': 2, 'APR': 3, 'MAY': 4, 'JUN': 5,
     'JUL': 6, 'AUG': 7, 'SEP': 8, 'OCT': 9, 'NOV': 10, 'DEC': 11
@@ -17,7 +15,7 @@ function isCurrentOrFutureMonth(expiryStr) {
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth(); // 0-indexed
 
-  // Match 3-letter month and 4-digit or 2-digit year
+  // Match: "20-NOV-2026", "NOV 2026", "20 NOV 26"
   const match = clean.match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*[\s\-_]*(\d{2,4})/i);
   if (match) {
     const month = monthMap[match[1].toUpperCase()];
@@ -29,7 +27,7 @@ function isCurrentOrFutureMonth(expiryStr) {
     return false;
   }
 
-  // Fallback match for DD-MM-YYYY or MM-YYYY
+  // Fallback match: DD-MM-YYYY or MM-YYYY
   const numMatch = clean.match(/(\d{1,2})[\/\-](\d{2,4})/);
   if (numMatch) {
     let month = parseInt(numMatch[1], 10) - 1;
@@ -41,7 +39,6 @@ function isCurrentOrFutureMonth(expiryStr) {
     return false;
   }
 
-  // If format cannot be determined, keep it to prevent accidental loss
   return true;
 }
 
@@ -69,17 +66,15 @@ async function run() {
 
   const db = admin.firestore();
 
+  // Launch Puppeteer with stable Ubuntu runner flags (removed crashpad-inducing flags)
   const browser = await puppeteer.launch({
-    headless: 'new',
+    headless: true,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-gpu'
+      '--disable-gpu',
+      '--window-size=1366,768'
     ]
   });
 
@@ -100,7 +95,7 @@ async function run() {
     await page.waitForSelector('table tbody tr', { timeout: 45000 });
     await new Promise(r => setTimeout(r, 2000));
 
-    // Extract raw rows
+    // Extract table rows
     const rawRecords = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('table tbody tr'));
       const parsed = [];
@@ -165,7 +160,7 @@ async function run() {
 
     console.log(`📊 Extracted: ${rawRecords.length} total | Filtered (Current & Future): ${filteredRecords.length}`);
 
-    // Save filtered list directly to Firestore
+    // Update Firestore market_watch/live_summary
     console.log('💾 Writing data to Firestore: market_watch/live_summary...');
     const nowTimestamp = admin.firestore.FieldValue.serverTimestamp();
 
