@@ -2,13 +2,13 @@ name: NCDEX Live Scrape & Sync
 
 on:
   schedule:
+    # Runs Monday to Friday every 15 minutes between 9:30 AM IST and 5:30 PM IST (04:00 - 12:00 UTC)
     - cron: '*/15 4-12 * * 1-5'
   workflow_dispatch:
 
 jobs:
   scrape-and-sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
@@ -19,15 +19,13 @@ jobs:
         with:
           node-version: 22
 
-      - name: Inspect Files
-        run: |
-          echo "=== CURRENT DIRECTORY ==="
-          pwd
-          echo "=== ALL JAVASCRIPT FILES IN REPO ==="
-          find . -maxdepth 3 -name "*.js"
-          echo "=== ROOT FILES ==="
-          ls -la
-
       - name: Install Dependencies
-        run: npm install puppeteer firebase-admin
+        working-directory: scripts/ncdex_updater
+        run: npm install
+
+      - name: Execute Scraper
+        working-directory: scripts/ncdex_updater
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: node fetch_ncdex.js
         
