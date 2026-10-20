@@ -22,7 +22,7 @@ jobs:
       - name: Install Scraper Dependencies
         working-directory: scripts/ncdex_updater
         run: |
-          rm -rf node_modules
+          rm -rf node_modules package-lock.json
           npm install puppeteer firebase-admin
 
       - name: Execute Scraper
