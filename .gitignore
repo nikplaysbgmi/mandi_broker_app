@@ -51,3 +51,5 @@ serviceAccountKey.json
 scripts/ncdex_updater/serviceAccountKey.json
 scripts/ncdex_updater/node_modules/
 node_modules/
+node_modules/
+scripts/ncdex_updater/node_modules/
