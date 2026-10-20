@@ -20,12 +20,10 @@ jobs:
           node-version: 22
 
       - name: Install Dependencies
-        working-directory: scripts/ncdex_updater
-        run: npm install
+        run: npm install puppeteer firebase-admin
 
       - name: Execute Scraper
-        working-directory: scripts/ncdex_updater
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: node fetch_ncdex.js
+        run: node ./scripts/ncdex_updater/fetch_ncdex.js
         
