@@ -1,18 +1,61 @@
 const admin = require('firebase-admin');
 const puppeteer = require('puppeteer');
 
-async function main() {
-  console.log('--- Starting NCDEX Live Rate Sync ---');
+// Helper to check if an expiry string is current month or in the future
+function isCurrentOrFutureMonth(expiryStr) {
+  if (!expiryStr || typeof expiryStr !== 'string') return true;
 
-  // 1. Verify and Initialize Firebase
+  // NCDEX expiry formats are typically: "20-NOV-2026", "NOV 2026", "20 NOV 2026", or "20-11-2026"
+  const clean = expiryStr.trim().toUpperCase();
+
+  const monthMap = {
+    'JAN': 0, 'FEB': 1, 'MAR': 2, 'APR': 3, 'MAY': 4, 'JUN': 5,
+    'JUL': 6, 'AUG': 7, 'SEP': 8, 'OCT': 9, 'NOV': 10, 'DEC': 11
+  };
+
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth(); // 0-indexed
+
+  // Match 3-letter month and 4-digit or 2-digit year
+  const match = clean.match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*[\s\-_]*(\d{2,4})/i);
+  if (match) {
+    const month = monthMap[match[1].toUpperCase()];
+    let year = parseInt(match[2], 10);
+    if (year < 100) year += 2000;
+
+    if (year > currentYear) return true;
+    if (year === currentYear && month >= currentMonth) return true;
+    return false;
+  }
+
+  // Fallback match for DD-MM-YYYY or MM-YYYY
+  const numMatch = clean.match(/(\d{1,2})[\/\-](\d{2,4})/);
+  if (numMatch) {
+    let month = parseInt(numMatch[1], 10) - 1;
+    let year = parseInt(numMatch[2], 10);
+    if (year < 100) year += 2000;
+
+    if (year > currentYear) return true;
+    if (year === currentYear && month >= currentMonth) return true;
+    return false;
+  }
+
+  // If format cannot be determined, keep it to prevent accidental loss
+  return true;
+}
+
+async function run() {
+  console.log('🚀 [NCDEX Scraper] Starting live sync for current & future months...');
+
   if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-    console.error('❌ Error: FIREBASE_SERVICE_ACCOUNT secret is missing from environment.');
+    console.error('❌ FATAL: FIREBASE_SERVICE_ACCOUNT secret missing!');
     process.exit(1);
   }
 
   try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    console.log(`📡 Connecting to Firebase Project: ${serviceAccount.project_id}`);
+    console.log(`📡 Connected to Firebase Project: ${serviceAccount.project_id}`);
 
     if (admin.apps.length === 0) {
       admin.initializeApp({
@@ -20,19 +63,22 @@ async function main() {
       });
     }
   } catch (err) {
-    console.error('❌ Error parsing FIREBASE_SERVICE_ACCOUNT JSON:', err.message);
+    console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:', err.message);
     process.exit(1);
   }
 
   const db = admin.firestore();
 
-  // 2. Launch Puppeteer
   const browser = await puppeteer.launch({
     headless: 'new',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
       '--disable-gpu'
     ]
   });
@@ -50,49 +96,95 @@ async function main() {
       timeout: 60000
     });
 
-    console.log('⏳ Waiting for commodity table to populate...');
-    await page.waitForSelector('table', { timeout: 45000 });
+    console.log('⏳ Waiting for table rows...');
+    await page.waitForSelector('table tbody tr', { timeout: 45000 });
+    await new Promise(r => setTimeout(r, 2000));
 
-    // 3. Extract Contract Rows
-    const data = await page.evaluate(() => {
+    // Extract raw rows
+    const rawRecords = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('table tbody tr'));
-      return rows.map(r => {
-        const cells = Array.from(r.querySelectorAll('td')).map(c => c.innerText.trim());
-        if (cells.length < 3) return null;
-        return {
-          symbol: cells[0] || '',
-          expiry: cells[1] || '',
-          open: cells[2] || '',
-          high: cells[3] || '',
-          low: cells[4] || '',
-          lastPrice: cells[5] || cells[2] || '',
-          change: cells[6] || '',
-          volume: cells[7] || ''
-        };
-      }).filter(item => item !== null && item.symbol !== '');
+      const parsed = [];
+
+      for (const row of rows) {
+        const cells = Array.from(row.querySelectorAll('td')).map(c => c.innerText.trim());
+        if (cells.length < 5) continue;
+
+        const symbol = cells[0] || '';
+        const expiry = cells[1] || '';
+        const open = cells[2] || '';
+        
+        let ltp = '';
+        let high = '';
+        let low = '';
+        let change = '';
+        let changePercent = '';
+        let volume = '';
+
+        if (cells.length >= 10) {
+          low = cells[3] || '';
+          ltp = cells[4] || cells[3] || '';
+          high = cells[5] || '';
+          change = cells[7] || '';
+          changePercent = cells[8] || '';
+          volume = cells[12] || cells[11] || '';
+        } else {
+          const midParts = (cells[3] || '').split(/\s+/);
+          if (midParts.length === 3) {
+            low = midParts[0];
+            ltp = midParts[1];
+            high = midParts[2];
+          } else {
+            ltp = cells[3] || cells[2] || '';
+          }
+          change = cells[5] || '';
+          volume = cells[6] || '';
+        }
+
+        if (symbol && symbol !== 'Product Name/Symbol') {
+          parsed.push({
+            symbol: symbol,
+            commodity: symbol,
+            expiry: expiry,
+            open: open.replace(/,/g, ''),
+            high: high.replace(/,/g, ''),
+            low: low.replace(/,/g, ''),
+            lastPrice: ltp.replace(/,/g, ''),
+            ltp: ltp.replace(/,/g, ''),
+            change: change.replace(/,/g, ''),
+            changePercent: changePercent.replace(/%/g, '').trim(),
+            volume: volume.replace(/,/g, '')
+          });
+        }
+      }
+
+      return parsed;
     });
 
-    console.log(`📊 Extracted ${data.length} commodity records from NCDEX.`);
+    // Filter strictly to current and future month contracts
+    const filteredRecords = rawRecords.filter(item => isCurrentOrFutureMonth(item.expiry));
 
-    // 4. Update Firestore market_watch/live_summary
+    console.log(`📊 Extracted: ${rawRecords.length} total | Filtered (Current & Future): ${filteredRecords.length}`);
+
+    // Save filtered list directly to Firestore
     console.log('💾 Writing data to Firestore: market_watch/live_summary...');
-    const now = admin.firestore.FieldValue.serverTimestamp();
+    const nowTimestamp = admin.firestore.FieldValue.serverTimestamp();
 
     await db.collection('market_watch').doc('live_summary').set({
-      commodities: data,
-      rates: data,
-      last_updated: now,
-      updatedAt: now,
-      status: 'active'
+      commodities: filteredRecords,
+      rates: filteredRecords,
+      last_updated: nowTimestamp,
+      updatedAt: nowTimestamp,
+      status: 'active',
+      source: 'NCDEX'
     }, { merge: true });
 
-    console.log('✅ Successfully updated Firestore!');
+    console.log('✅ Successfully updated Firestore with current & future month contracts!');
   } catch (err) {
-    console.error('❌ Scrape execution error:', err.message);
+    console.error('❌ Scraper error:', err.message);
     process.exit(1);
   } finally {
     await browser.close();
   }
 }
 
-main();
+run();
