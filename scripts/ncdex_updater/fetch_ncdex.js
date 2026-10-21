@@ -1,27 +1,47 @@
 const admin = require('firebase-admin');
 const puppeteer = require('puppeteer');
 
-// Core commodities tracked in the app UI
-const TARGET_COMMODITIES = [
-  { key: 'JEERAUNJHA', patterns: ['JEERA', 'JEERAUNJHA'] },
-  { key: 'DHANIYA', patterns: ['DHANIYA', 'CORIANDER'] },
-  { key: 'TMCFGRNZM', patterns: ['TMCFGRNZM', 'TURMERIC'] },
-  { key: 'ISABGOL', patterns: ['ISABGOL', 'PSYLLIUM'] },
-  { key: 'FENNEL', patterns: ['FENNEL', 'SAUNF'] },
-  { key: 'FENUGREEK', patterns: ['FENUGREEK', 'METHI'] },
-  { key: 'GUARSEED10', patterns: ['GUARSEED', 'GUARSEED10'] },
-  { key: 'GUARGUM5', patterns: ['GUARGUM', 'GUARGUM5'] },
-  { key: 'CHANA', patterns: ['CHANA', 'GRAM'] },
-  { key: 'CASTOR', patterns: ['CASTOR', 'CASTORSEED'] },
-  { key: 'SOYABEAN', patterns: ['SOYABEAN', 'SOYBEAN'] },
-  { key: 'MUSTARD', patterns: ['MUSTARD', 'RMSEED'] }
+// Full list of agricultural commodities traded on NCDEX
+const COMMODITY_CONFIG = [
+  { display: 'JEERAUNJHA', patterns: ['JEERA'] },
+  { display: 'TMCFGRNZM', patterns: ['TURMERIC', 'TMCFGRNZM'] },
+  { display: 'GUARSEED10', patterns: ['GUAR SEED', 'GUARSEED'] },
+  { display: 'GUARGUM5', patterns: ['GUAR GUM', 'GUARGUM'] },
+  { display: 'COKUDL', patterns: ['COTTON SEED OILCAKE', 'COKUDL', 'KAPAS KHAL'] },
+  { display: 'CASTOR', patterns: ['CASTOR SEED', 'CASTOR'] },
+  { display: 'CHANA', patterns: ['CHANA', 'GRAM'] },
 ];
 
+function isCurrentOrFutureExpiry(expiryStr) {
+  if (!expiryStr || typeof expiryStr !== 'string') return true;
+  const clean = expiryStr.trim().toUpperCase();
+
+  const monthMap = {
+    'JAN': 0, 'FEB': 1, 'MAR': 2, 'APR': 3, 'MAY': 4, 'JUN': 5,
+    'JUL': 6, 'AUG': 7, 'SEP': 8, 'OCT': 9, 'NOV': 10, 'DEC': 11
+  };
+
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+
+  const match = clean.match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*[\s\-_]*(\d{2,4})/i);
+  if (match) {
+    const m = monthMap[match[1].toUpperCase()];
+    let y = parseInt(match[2], 10);
+    if (y < 100) y += 2000;
+    if (y > currentYear) return true;
+    if (y === currentYear && m >= currentMonth) return true;
+    return false;
+  }
+  return true;
+}
+
 async function run() {
-  console.log('🚀 [NCDEX Scraper] Starting fetch for MarketWatch view...');
+  console.log('🚀 [NCDEX Scraper] Starting live quote extraction...');
 
   if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-    console.error('❌ FIREBASE_SERVICE_ACCOUNT missing!');
+    console.error('❌ FATAL: FIREBASE_SERVICE_ACCOUNT missing!');
     process.exit(1);
   }
 
@@ -33,7 +53,7 @@ async function run() {
       });
     }
   } catch (err) {
-    console.error('❌ Service account parse error:', err.message);
+    console.error('❌ Service Account parse error:', err.message);
     process.exit(1);
   }
 
@@ -57,7 +77,7 @@ async function run() {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
 
-    console.log('🌐 Loading NCDEX Live Quotes...');
+    console.log('🌐 Loading NCDEX Live Quotes page...');
     await page.goto('https://www.ncdex.com/market-watch/live_quotes', {
       waitUntil: 'domcontentloaded',
       timeout: 60000
@@ -67,7 +87,7 @@ async function run() {
     await new Promise(r => setTimeout(r, 2500));
 
     // Scrape all table rows
-    const scrapedRows = await page.evaluate(() => {
+    const tableData = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('table tbody tr'));
       return rows.map(r => {
         const cells = Array.from(r.querySelectorAll('td')).map(c => c.innerText.trim());
@@ -75,80 +95,90 @@ async function run() {
       }).filter(c => c.length >= 4);
     });
 
-    console.log(`📊 Total raw rows scraped: ${scrapedRows.length}`);
+    console.log(`📊 Total table rows extracted: ${tableData.length}`);
 
-    // Map rows to our target commodities, prioritizing the near month with actual trades
     const commodityMap = new Map();
 
-    for (const cells of scrapedRows) {
-      const rawSymbol = (cells[0] || '').toUpperCase();
+    for (const cells of tableData) {
+      const rawProduct = (cells[0] || '').toUpperCase();
       const expiry = cells[1] || '';
 
-      // Find which target commodity this matches
-      const target = TARGET_COMMODITIES.find(t =>
-        t.patterns.some(p => rawSymbol.includes(p))
+      // Skip past months
+      if (!isCurrentOrFutureExpiry(expiry)) continue;
+
+      // Find matched target commodity
+      const matched = COMMODITY_CONFIG.find(item =>
+        item.patterns.some(pat => rawProduct.includes(pat))
       );
 
-      if (!target) continue;
+      if (!matched) continue;
 
-      // Extract price fields across different NCDEX column variations
       let ltp = '0';
       let change = '0';
 
-      if (cells.length >= 10) {
-        // [Symbol, Expiry, Open, Low, LTP, High, Close, Change, %Change, ...]
-        ltp = cells[4] || cells[3] || '0';
-        change = cells[7] || cells[6] || '0';
-      } else {
-        // Grouped column format
-        const combined = (cells[3] || '').split(/\s+/);
-        ltp = combined.length >= 2 ? combined[1] : (cells[3] || '0');
-        change = cells[5] || '0';
+      // Parse NCDEX columns: [Product, Expiry, Open, Low LTP High, Close, Change, ...]
+      if (cells.length >= 6) {
+        const lowLtpHigher = (cells[3] || '').replace(/,/g, '').split(/\s+/);
+        if (lowLtpHigher.length >= 2) {
+          // In 'Low LTP High', LTP is the middle element
+          ltp = lowLtpHigher.length === 3 ? lowLtpHigher[1] : lowLtpHigher[0];
+        } else {
+          ltp = (cells[3] || cells[2] || '0').replace(/,/g, '');
+        }
+
+        // Change column is usually cell 5
+        change = (cells[5] || '0').replace(/,/g, '');
       }
 
-      ltp = ltp.replace(/,/g, '').trim();
-      change = change.replace(/,/g, '').trim();
-
-      // Ensure valid numbers
+      // Cleanup numbers
       const numLtp = parseFloat(ltp);
       const numChange = parseFloat(change);
 
-       const entry = {
-        symbol: target.key,
-        name: target.key,
-        expiry: expiry,       // Exact date from NCDEX table (e.g., '20 NOV 2026')
-        contract: expiry,     // Replaces static 'NEAR' with the actual date
-        lastPrice: isNaN(numLtp) ? '0' : numLtp.toFixed(0),
-        ltp: isNaN(numLtp) ? '0' : numLtp.toFixed(0),
-        change: isNaN(numChange) ? '+0' : (numChange >= 0 ? `+${numChange.toFixed(0)}` : `${numChange.toFixed(0)}`),
+      const cleanPrice = (!isNaN(numLtp) && numLtp > 0) ? numLtp.toFixed(0) : '0';
+      const cleanChange = isNaN(numChange)
+        ? '+0'
+        : (numChange >= 0 ? `+${numChange.toFixed(0)}` : `${numChange.toFixed(0)}`);
+
+      const entry = {
+        symbol: matched.display,
+        name: matched.display,
+        commodity: matched.display,
+        expiry: expiry,
+        contract: expiry,
+        lastPrice: cleanPrice,
+        ltp: cleanPrice,
+        change: cleanChange,
         isPositive: !isNaN(numChange) && numChange >= 0
       };
 
-      // If we haven't stored this commodity yet, or if this row has an active price (> 0) while the stored one is 0
-      if (!commodityMap.has(target.key) || (numLtp > 0 && parseFloat(commodityMap.get(target.key).lastPrice) === 0)) {
-        commodityMap.set(target.key, entry);
+      // Store near-month contract (first occurrence or one with a valid price)
+      if (!commodityMap.has(matched.display) ||
+         (cleanPrice !== '0' && commodityMap.get(matched.display).lastPrice === '0')) {
+        commodityMap.set(matched.display, entry);
       }
     }
 
-    // Build the ordered list matching the reference image order
-    const finalList = TARGET_COMMODITIES
-      .filter(t => commodityMap.has(t.key))
-      .map(t => commodityMap.get(t.key));
+    // Build the ordered list preserving configured commodity order
+    const finalList = COMMODITY_CONFIG
+      .filter(item => commodityMap.has(item.display))
+      .map(item => commodityMap.get(item.display));
 
-    console.log(`✅ Ready to save ${finalList.length} near-month commodity cards.`);
+    console.log(`✅ Formatted ${finalList.length} active commodities for MarketWatch.`);
 
+    // Write to Firestore
     const now = admin.firestore.FieldValue.serverTimestamp();
     await db.collection('market_watch').doc('live_summary').set({
       commodities: finalList,
       rates: finalList,
       last_updated: now,
       updatedAt: now,
-      status: 'active'
+      status: 'active',
+      source: 'NCDEX'
     }, { merge: true });
 
-    console.log('🎉 Successfully saved to Firestore market_watch/live_summary!');
+    console.log('🎉 Successfully saved full commodity list to Firestore!');
   } catch (err) {
-    console.error('❌ Error during run:', err.message);
+    console.error('❌ Scraper runtime error:', err.message);
     process.exit(1);
   } finally {
     await browser.close();
