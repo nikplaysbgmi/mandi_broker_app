@@ -113,11 +113,11 @@ async function run() {
       const numLtp = parseFloat(ltp);
       const numChange = parseFloat(change);
 
-      const entry = {
+       const entry = {
         symbol: target.key,
         name: target.key,
-        contract: 'NEAR',
-        expiry: expiry,
+        expiry: expiry,       // Exact date from NCDEX table (e.g., '20 NOV 2026')
+        contract: expiry,     // Replaces static 'NEAR' with the actual date
         lastPrice: isNaN(numLtp) ? '0' : numLtp.toFixed(0),
         ltp: isNaN(numLtp) ? '0' : numLtp.toFixed(0),
         change: isNaN(numChange) ? '+0' : (numChange >= 0 ? `+${numChange.toFixed(0)}` : `${numChange.toFixed(0)}`),

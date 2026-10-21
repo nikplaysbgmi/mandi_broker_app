@@ -352,14 +352,15 @@ class McxWatchList extends StatelessWidget {
           itemBuilder: (context, index) {
             final item = rates[index] as Map<String, dynamic>;
             final String symbol = item['symbol']?.toString() ?? '';
-            final String expiry = item['expiry']?.toString() ?? '';
-            final double ltp =
-                (item['ltp'] is num) ? (item['ltp'] as num).toDouble() : 0.0;
-            final double change = (item['change'] is num)
-                ? (item['change'] as num).toDouble()
-                : 0.0;
+            final String expiry = item['expiry']?.toString() ?? 'NEAR';
 
-            final bool isPositive = change > 0;
+            final double ltp = double.tryParse(
+                    (item['ltp'] ?? item['lastPrice'] ?? '0').toString()) ??
+                0.0;
+            final double change =
+                double.tryParse((item['change'] ?? '0').toString()) ?? 0.0;
+
+            final bool isPositive = change >= 0;
             final Color changeColor = change == 0
                 ? const Color(0xFF00E676)
                 : (isPositive
@@ -368,7 +369,7 @@ class McxWatchList extends StatelessWidget {
 
             return Container(
               color: Colors.black,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -382,12 +383,21 @@ class McxWatchList extends StatelessWidget {
                           fontSize: 18,
                         ),
                       ),
-                      const SizedBox(width: 10),
-                      Text(
-                        expiry,
-                        style: const TextStyle(
-                          color: Color(0xFF8E8E93),
-                          fontSize: 13,
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF262626),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          expiry,
+                          style: const TextStyle(
+                            color: Color(0xFF9E9E9E),
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                     ],
@@ -405,11 +415,9 @@ class McxWatchList extends StatelessWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        change == 0
-                            ? "(+0)"
-                            : (isPositive
-                                ? "(+${change.toStringAsFixed(0)})"
-                                : "(${change.toStringAsFixed(0)})"),
+                        change >= 0
+                            ? "(+${change.toStringAsFixed(0)})"
+                            : "(${change.toStringAsFixed(0)})",
                         style: TextStyle(
                           color: changeColor,
                           fontSize: 14,
@@ -429,7 +437,7 @@ class McxWatchList extends StatelessWidget {
 }
 
 // =============================================================
-// TAB 2: NCDEX WATCHLIST (INTEGRATED WITH PUPPETEER UPDATER)
+// TAB 2: NCDEX WATCHLIST (DATE BADGE + REFERENCE THEME)
 // =============================================================
 class NcdexWatchList extends StatelessWidget {
   const NcdexWatchList({super.key});
@@ -474,17 +482,18 @@ class NcdexWatchList extends StatelessWidget {
         }
 
         final docData = snapshot.data?.data();
-        final Timestamp? timestamp = docData?['updatedAt'] as Timestamp?;
-        final List<dynamic> rates =
-            (docData != null && docData['rates'] is List)
-                ? docData['rates'] as List<dynamic>
-                : <dynamic>[];
+        final Timestamp? timestamp =
+            (docData?['updatedAt'] ?? docData?['last_updated']) as Timestamp?;
+        final List<dynamic> rates = (docData != null &&
+                (docData['commodities'] is List || docData['rates'] is List))
+            ? (docData['commodities'] ?? docData['rates']) as List<dynamic>
+            : <dynamic>[];
 
         final DateTime? updatedAt = timestamp?.toDate().toLocal();
 
         return Column(
           children: [
-            // Feed status banner
+            // Top Date/Time Feed Sync Bar
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: const BoxDecoration(
@@ -507,7 +516,7 @@ class NcdexWatchList extends StatelessWidget {
                       Text(
                         updatedAt != null
                             ? '${_formatDate(updatedAt)}  ${_formatTime(updatedAt)}'
-                            : 'NCDEX Official Feed',
+                            : 'NCDEX Live Market',
                         style: const TextStyle(
                           color: Colors.white70,
                           fontSize: 12,
@@ -549,111 +558,114 @@ class NcdexWatchList extends StatelessWidget {
                   : ListView.separated(
                       itemCount: rates.length,
                       separatorBuilder: (_, __) => const Divider(
-                        color: Color(0xFF141414),
+                        color: Color(0xFF171717),
                         height: 1,
                         thickness: 1,
                       ),
                       itemBuilder: (context, index) {
                         final item = rates[index] as Map<String, dynamic>;
-                        final String displayName = item['name']?.toString() ??
-                            item['symbol']?.toString() ??
-                            '';
-                        final String expiry =
-                            item['expiry']?.toString() ?? 'NEAR';
 
-                        final double ltp = (item['ltp'] is num)
-                            ? (item['ltp'] as num).toDouble()
-                            : 0.0;
-                        final double change = (item['change'] is num)
-                            ? (item['change'] as num).toDouble()
-                            : 0.0;
-                        final double percentChange =
-                            (item['percentChange'] is num)
-                                ? (item['percentChange'] as num).toDouble()
-                                : 0.0;
-                        final double spotPrice = (item['spotPrice'] is num)
-                            ? (item['spotPrice'] as num).toDouble()
-                            : 0.0;
+                        final String displayName = (item['symbol'] ??
+                                item['name'] ??
+                                item['commodity'] ??
+                                '')
+                            .toString();
 
-                        final bool isPositive = change > 0;
-                        final bool isZero = change == 0;
-                        final Color changeColor = isZero
-                            ? const Color(0xFF00E676)
-                            : (isPositive
-                                ? const Color(0xFF00E676)
-                                : const Color(0xFFFF3B30));
+                        // Prioritize real expiry date over fallback NEAR
+                        final String expiryDate =
+                            (item['expiry'] ?? item['contract'] ?? 'NEAR')
+                                .toString()
+                                .trim();
+
+                        final String rawPrice =
+                            (item['lastPrice'] ?? item['ltp'] ?? '0')
+                                .toString()
+                                .replaceAll(',', '')
+                                .trim();
+                        final double ltp = double.tryParse(rawPrice) ?? 0.0;
+
+                        final String rawChange = (item['change'] ?? '+0')
+                            .toString()
+                            .replaceAll(',', '')
+                            .trim();
+                        final double numChange =
+                            double.tryParse(rawChange.replaceAll('+', '')) ??
+                                0.0;
+
+                        final bool isPositive =
+                            !rawChange.startsWith('-') && numChange >= 0;
+                        final Color changeColor = isPositive
+                            ? const Color(0xFF22C55E) // Bright Green
+                            : const Color(0xFFEF4444); // Bright Red
+
+                        final String changeText = isPositive
+                            ? '(+${numChange.toStringAsFixed(0)})'
+                            : '(${numChange.toStringAsFixed(0)})';
 
                         return Container(
                           color: Colors.black,
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 14),
+                              horizontal: 16, vertical: 15),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             crossAxisAlignment: CrossAxisAlignment.center,
                             children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      displayName,
+                              // Left: Commodity Symbol in Blue + Expiry Date Badge
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    displayName,
+                                    style: const TextStyle(
+                                      color: Color(0xFF38BDF8),
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 18,
+                                      letterSpacing: 0.4,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF262626),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      expiryDate,
                                       style: const TextStyle(
-                                        color: Color(0xFF29B6F6),
-                                        fontWeight: FontWeight.w800,
-                                        fontSize: 17,
+                                        color: Color(0xFF9E9E9E),
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
                                         letterSpacing: 0.3,
                                       ),
                                     ),
-                                    const SizedBox(height: 3),
-                                    Row(
-                                      children: [
-                                        Text(
-                                          'Expiry: $expiry',
-                                          style: const TextStyle(
-                                            color: Color(0xFF8E8E93),
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                        ),
-                                        if (spotPrice > 0) ...[
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            '• Spot: ₹${spotPrice.toStringAsFixed(0)}',
-                                            style: const TextStyle(
-                                              color: Colors.white38,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
+
+                              // Right: Large White Price + (Change) in Green/Red below it
                               Column(
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Text(
-                                    '₹${ltp.toStringAsFixed(0)}',
+                                    ltp > 0 ? ltp.toStringAsFixed(0) : rawPrice,
                                     style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 20,
-                                      fontWeight: FontWeight.bold,
-                                      letterSpacing: 0.2,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: 0.4,
                                     ),
                                   ),
                                   const SizedBox(height: 2),
                                   Text(
-                                    isZero
-                                        ? "(+0)"
-                                        : (isPositive
-                                            ? "(+${change.toStringAsFixed(0)} / ${percentChange.toStringAsFixed(2)}%)"
-                                            : "(${change.toStringAsFixed(0)} / ${percentChange.toStringAsFixed(2)}%)"),
+                                    changeText,
                                     style: TextStyle(
                                       color: changeColor,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.2,
                                     ),
                                   ),
                                 ],
