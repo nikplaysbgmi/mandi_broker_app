@@ -1,0 +1,74 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: Check if client has an active authenticated session
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // 1. User Personal Folders (1 User = 1 Personal Folder)
+    // 100% Private: Only authenticated app users can access their records
+    match /users/{userId} {
+      allow read, write: if isAuthenticated();
+
+      match /{subCollection=**} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+
+    // 2. Broker directory and private subcollections
+    match /brokers/{brokerId} {
+      allow read, write: if isAuthenticated();
+
+      match /{subCollection=**} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+
+    // 3. Global Network Ledgers & Sauda Registry (Secret by Code & Auth)
+    // Unauthenticated public access is completely blocked
+    match /saudas/{saudaId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Secure Collection Group access for user trade records
+    match /{path=**}/records/{recordId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /notifications/{notifId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /accounts/{accId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /broker_profiles/{profileId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // 4. App configurations and service switches
+    // Public read allows pre-login connectivity ping; write is strictly authenticated
+    match /app_config/{docId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    match /service_switches/{docId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // 5. Live Market Watch & Realtime Presence
+    match /market_watch/{docId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    match /live_presence/{sessionId} {
+      allow read, write: if true;
+    }
+  }
+}

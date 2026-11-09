@@ -1687,8 +1687,7 @@ class _KisanBillGeneratorTabState extends State<KisanBillGeneratorTab> {
               } else {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
-                    content: Text(
-                        '❌ ईमेल भेजने में विफलता! कृपया Brevo API जांचें।'),
+                    content: Text('❌ ईमेल भेजने में विफलता।'),
                     backgroundColor: Colors.redAccent,
                   ),
                 );
@@ -2162,7 +2161,7 @@ ${_kantaCharge > 0 ? "कांटा खर्च: -Rs ${_kantaCharge.toStringA
                                     firstDate: DateTime(2020),
                                     lastDate: DateTime.now(),
                                   );
-                                  if (picked != null) {
+                                  if (picked != null && mounted) {
                                     setState(() => _billDate = picked);
                                   }
                                 },

@@ -10,12 +10,17 @@ import '../models/mandi_models.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/email_service.dart';
 import '../services/mandi_services.dart';
+import '../services/telegram_notification_service.dart';
 import 'bill_generator_screen.dart';
 import 'broker_portal_screen.dart';
 import 'buyer_portal_screen.dart';
 import 'contact_services_screen.dart';
 import 'market_watch_screen.dart';
 import 'seller_portal_screen.dart';
+import '../widgets/edit_promo_dialog.dart';
+import '../widgets/github_workflow_dialog.dart';
+import '../widgets/promo_dialog.dart';
+import '../widgets/subscription_renewal_banner.dart';
 
 // =============================================================
 // MAIN 6-SECTION DASHBOARD
@@ -28,6 +33,10 @@ class MainDashboardScreen extends StatefulWidget {
 }
 
 class _MainDashboardScreenState extends State<MainDashboardScreen> {
+  Map<String, dynamic> _latestServiceSwitches = {};
+  int _failedAdminPinAttempts = 0;
+  DateTime? _adminPinLockoutUntil;
+
   @override
   void initState() {
     super.initState();
@@ -35,7 +44,16 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        AppUpdateService.checkForUpdates(context);
+        try {
+          AppUpdateService.checkForUpdates(context);
+        } catch (e) {
+          debugPrint('Update check non-fatal error: $e');
+        }
+        try {
+          PromoDialog.showIfActive(context);
+        } catch (e) {
+          debugPrint('Promo check non-fatal error: $e');
+        }
       }
     });
   }
@@ -54,20 +72,25 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         title: const Row(
           children: [
             Icon(Icons.info_outline, color: Colors.orange),
             SizedBox(width: 8),
             Text(
-              'Notice',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              'Notice (सूचना)',
+              style: TextStyle(
+                color: Colors.black87,
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
             ),
           ],
         ),
-        content: const Text(
-          'This service is permanently closed, so please use other service.',
-          style: TextStyle(fontSize: 13),
+        content: Text(
+          '$sectionTitle is currently locked or under maintenance by administrator.\n\nयह सेवा वर्तमान में व्यवस्थापक द्वारा बंद (Locked) की गई है। कृपया अन्य चालू सेवाओं का उपयोग करें।',
+          style: const TextStyle(color: Colors.black87, fontSize: 13),
         ),
         actions: [
           ElevatedButton(
@@ -83,32 +106,53 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  void _promptAdminPin(BuildContext context) {
+  void _promptAdminPin(BuildContext context, {bool openPosterDirectly = false}) {
+    if (_adminPinLockoutUntil != null &&
+        DateTime.now().isBefore(_adminPinLockoutUntil!)) {
+      final remainingSec =
+          _adminPinLockoutUntil!.difference(DateTime.now()).inSeconds;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              '⚠️ सुरक्षा लॉक: बहुत सारे गलत प्रयास। कृपया $remainingSec सेकंड बाद पुनः प्रयास करें।'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
     final pinController = TextEditingController();
-    const String masterPin = "2740157";
+    const String masterPin = "@2740157";
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E1E),
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.admin_panel_settings, color: Color(0xFFFF5722)),
-            SizedBox(width: 8),
+            Icon(
+              openPosterDirectly
+                  ? Icons.campaign_rounded
+                  : Icons.admin_panel_settings,
+              color: const Color(0xFFFF5722),
+            ),
+            const SizedBox(width: 8),
             Text(
-              'Master Admin Access',
-              style: TextStyle(color: Colors.white, fontSize: 16),
+              openPosterDirectly
+                  ? 'पोस्टर सेवा (Master PIN)'
+                  : 'Master Admin Access',
+              style: const TextStyle(color: Colors.white, fontSize: 16),
             ),
           ],
         ),
         content: TextField(
           controller: pinController,
-          keyboardType: TextInputType.number,
+          keyboardType: TextInputType.text,
           obscureText: true,
           autofocus: true,
           style: const TextStyle(color: Colors.white),
           decoration: const InputDecoration(
-            hintText: 'Enter 4-digit Master PIN',
+            hintText: 'Enter Master PIN',
             hintStyle: TextStyle(color: Colors.white38),
             filled: true,
             fillColor: Color(0xFF2B2B2B),
@@ -125,17 +169,39 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             ),
             onPressed: () {
               if (pinController.text.trim() == masterPin) {
+                _failedAdminPinAttempts = 0;
+                _adminPinLockoutUntil = null;
                 Navigator.pop(ctx);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const AdminUsersListScreen(),
-                  ),
-                );
+                if (openPosterDirectly) {
+                  showDialog(
+                    context: context,
+                    builder: (context) => const EditPromoDialog(),
+                  );
+                } else {
+                  _showMasterAdminHub(context);
+                }
               } else {
+                _failedAdminPinAttempts++;
+                if (_failedAdminPinAttempts >= 5) {
+                  _adminPinLockoutUntil =
+                      DateTime.now().add(const Duration(minutes: 5));
+                  _failedAdminPinAttempts = 0;
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                          '🚨 5 गलत प्रयास! सुरक्षा कारणों से Master Admin 5 मिनट के लिए लॉक कर दिया गया है।'),
+                      backgroundColor: Colors.red,
+                      duration: Duration(seconds: 5),
+                    ),
+                  );
+                  return;
+                }
+                final remaining = 5 - _failedAdminPinAttempts;
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Incorrect Master PIN! Access denied.'),
+                  SnackBar(
+                    content: Text(
+                        'Incorrect Master PIN! Access denied. ($remaining प्रयास शेष)'),
                     backgroundColor: Colors.redAccent,
                   ),
                 );
@@ -144,6 +210,163 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             child: const Text('Enter', style: TextStyle(color: Colors.white)),
           ),
         ],
+      ),
+    );
+  }
+
+  void _showMasterAdminHub(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF0F172A),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: Color(0xFF38BDF8), width: 1.2),
+        ),
+        title: const Row(
+          children: [
+            Icon(Icons.admin_panel_settings_rounded,
+                color: Color(0xFFFF5722), size: 24),
+            SizedBox(width: 8),
+            Text(
+              'Master Admin Hub',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildAdminHubOption(
+                icon: Icons.campaign_rounded,
+                color: const Color(0xFFFF5722),
+                title: '📢 विज्ञापन / पोस्टर सेवा (Post Poster)',
+                subtitle: 'डैशबोर्ड व ऐप स्टार्ट पर प्रचार पोस्टर लगाएं',
+                onTap: () {
+                  Navigator.pop(ctx);
+                  showDialog(
+                    context: context,
+                    builder: (_) => const EditPromoDialog(),
+                  );
+                },
+              ),
+              const SizedBox(height: 10),
+              _buildAdminHubOption(
+                icon: Icons.people_alt_rounded,
+                color: const Color(0xFF38BDF8),
+                title: '👥 यूज़र व पासवर्ड प्रबंधन (Users & Accounts)',
+                subtitle: 'सभी यूज़र्स देखें, पासवर्ड बदलें, लॉक/अनलॉक करें',
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const AdminUsersListScreen(),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 10),
+              _buildAdminHubOption(
+                icon: Icons.tune_rounded,
+                color: const Color(0xFF10B981),
+                title: '🔒 सेवाएं लॉक / अनलॉक (Services Control)',
+                subtitle: 'लाइव भाव, बायर, सेलर, ब्रोकर, बिल सेवाएं चालू/बंद करें',
+                onTap: () {
+                  Navigator.pop(ctx);
+                  AdminUsersListScreen.openServiceSwitchesDialog(context);
+                },
+              ),
+              const SizedBox(height: 10),
+              _buildAdminHubOption(
+                icon: Icons.play_circle_fill_rounded,
+                color: const Color(0xFF38BDF8),
+                title: '⚡ GitHub NCDEX Workflow (चलाएं)',
+                subtitle: 'NCDEX लाइव भाव तुरंत अपडेट करने हेतु गिटहब एक्शन रन करें',
+                onTap: () {
+                  Navigator.pop(ctx);
+                  showDialog(
+                    context: context,
+                    builder: (_) => const GitHubWorkflowDialog(),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('बंद करें (CLOSE)',
+                style: TextStyle(color: Colors.grey)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAdminHubOption({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.35), width: 1.2),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(9),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: color, size: 22),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        color: Color(0xFF94A3B8),
+                        fontSize: 10.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.arrow_forward_ios_rounded,
+                  size: 13, color: Colors.white38),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -235,7 +458,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       );
       AccountService.saveAccounts(all);
 
-      // If active session belongs to this removed account, clear it
       final activeSec = account.section.toUpperCase();
       if (StorageService.get('session_${activeSec}_mobile') == account.mobile) {
         StorageService.remove('session_$activeSec');
@@ -243,6 +465,18 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         StorageService.remove('session_${activeSec}_mobile');
         StorageService.remove('session_${activeSec}_email');
         StorageService.remove('session_${activeSec}_address');
+      }
+
+      try {
+        TelegramNotificationService.notifyAccountDeleted(
+          name: account.name,
+          mobile: account.mobile,
+          section: account.section,
+          deletedBy: 'USER (Self Remove)',
+          reason: 'User removed profile from device quick login list',
+        );
+      } catch (tgErr) {
+        debugPrint('Telegram notification failed: $tgErr');
       }
 
       setDialogState(() {});
@@ -273,6 +507,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           final activeUser = brokerUser ?? buyerUser ?? sellerUser ?? billUser;
 
           return AlertDialog(
+            backgroundColor: Colors.white,
             shape:
                 RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             title: const Row(
@@ -281,7 +516,11 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                 SizedBox(width: 10),
                 Text(
                   'User Profile & Accounts',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+                  style: TextStyle(
+                    color: Colors.black87,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 17,
+                  ),
                 ),
               ],
             ),
@@ -326,6 +565,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                                     Text(
                                       activeUser.name,
                                       style: const TextStyle(
+                                        color: Colors.black87,
                                         fontWeight: FontWeight.bold,
                                         fontSize: 15,
                                       ),
@@ -347,20 +587,169 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                           const Divider(height: 18),
                           Text(
                             'Mobile: ${activeUser.mobile}',
-                            style: const TextStyle(fontSize: 12.5),
+                            style: const TextStyle(
+                              color: Colors.black87,
+                              fontSize: 12.5,
+                            ),
                           ),
                           const SizedBox(height: 3),
                           Text(
                             'Email: ${activeUser.email.isNotEmpty ? activeUser.email : "Not Provided"}',
-                            style: const TextStyle(fontSize: 12.5),
+                            style: const TextStyle(
+                              color: Colors.black87,
+                              fontSize: 12.5,
+                            ),
                           ),
                           if (activeUser.address.isNotEmpty) ...[
                             const SizedBox(height: 3),
                             Text(
                               'Address: ${activeUser.address}',
-                              style: const TextStyle(fontSize: 12.5),
+                              style: const TextStyle(
+                                color: Colors.black87,
+                                fontSize: 12.5,
+                              ),
                             ),
                           ],
+                          // Live Subscription Details Card in Profile Dialog
+                          StreamBuilder<DocumentSnapshot>(
+                            stream: FirebaseFirestore.instance
+                                .collection('users')
+                                .doc(CloudSyncService.cleanMobileNumber(
+                                    activeUser.mobile))
+                                .snapshots(),
+                            builder: (context, subSnap) {
+                              if (!subSnap.hasData ||
+                                  subSnap.data == null ||
+                                  !subSnap.data!.exists) {
+                                return const SizedBox.shrink();
+                              }
+                              final subData = subSnap.data!.data()
+                                      as Map<String, dynamic>? ??
+                                  {};
+                              final renewalDate =
+                                  CloudSyncService.parseRenewalDate(subData);
+                              final daysLeft = renewalDate
+                                  ?.difference(DateTime.now())
+                                  .inDays;
+                              final plan = (subData['subscription_plan'] ??
+                                      (subData['subscription'] is Map
+                                          ? subData['subscription']['plan']
+                                          : null) ??
+                                      'Active Plan')
+                                  .toString();
+                              final isLocked = subData['is_locked'] == true ||
+                                  subData['subscription_due'] == true ||
+                                  (daysLeft != null && daysLeft < 0);
+
+                              final dateStr = renewalDate != null
+                                  ? '${renewalDate.day.toString().padLeft(2, '0')}-${renewalDate.month.toString().padLeft(2, '0')}-${renewalDate.year}'
+                                  : 'Not set';
+
+                              return Container(
+                                margin: const EdgeInsets.only(top: 10),
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: isLocked
+                                      ? Colors.red.shade50
+                                      : (daysLeft != null && daysLeft <= 7)
+                                          ? Colors.amber.shade50
+                                          : Colors.teal.shade50,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: isLocked
+                                        ? Colors.red.shade300
+                                        : (daysLeft != null && daysLeft <= 7)
+                                            ? Colors.amber.shade300
+                                            : Colors.teal.shade300,
+                                  ),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Icon(
+                                          isLocked
+                                              ? Icons.lock_outline
+                                              : (daysLeft != null &&
+                                                      daysLeft <= 7)
+                                                  ? Icons
+                                                      .notification_important_rounded
+                                                  : Icons.verified_user_rounded,
+                                          size: 16,
+                                          color: isLocked
+                                              ? Colors.red.shade800
+                                              : (daysLeft != null &&
+                                                      daysLeft <= 7)
+                                                  ? Colors.amber.shade900
+                                                  : Colors.teal.shade800,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          'Subscription Status',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 12,
+                                            color: isLocked
+                                                ? Colors.red.shade900
+                                                : (daysLeft != null &&
+                                                        daysLeft <= 7)
+                                                    ? Colors.amber.shade900
+                                                    : Colors.teal.shade900,
+                                          ),
+                                        ),
+                                        const Spacer(),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: isLocked
+                                                ? Colors.red
+                                                : Colors.teal.shade700,
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            isLocked ? 'SUBSCRIPTION DUE' : 'ACTIVE',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 9.5,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      'Plan: $plan',
+                                      style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.black87),
+                                    ),
+                                    if (renewalDate != null) ...[
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        'Renewal: $dateStr (${daysLeft != null ? (daysLeft < 0 ? "Expired ${-daysLeft} days ago" : (daysLeft == 0 ? "Today" : "$daysLeft days left")) : ""})',
+                                        style: TextStyle(
+                                          fontSize: 11.5,
+                                          color: (daysLeft != null &&
+                                                  daysLeft <= 7)
+                                              ? Colors.red.shade800
+                                              : Colors.black87,
+                                          fontWeight: (daysLeft != null &&
+                                                  daysLeft <= 7)
+                                              ? FontWeight.bold
+                                              : FontWeight.normal,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
                         ],
                       ),
                     ),
@@ -418,7 +807,10 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                           Text(
                             'No Active User Logged In',
                             style: TextStyle(
-                                fontWeight: FontWeight.bold, fontSize: 14),
+                              color: Colors.black87,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
                           ),
                           SizedBox(height: 4),
                           Text(
@@ -439,7 +831,10 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                         const Text(
                           'Saved Device Accounts:',
                           style: TextStyle(
-                              fontWeight: FontWeight.bold, fontSize: 13),
+                            color: Colors.black87,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
                         ),
                         Text(
                           '${allAccounts.length} saved',
@@ -462,8 +857,30 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                             borderRadius: BorderRadius.circular(8),
                             onTap: () {
                               Navigator.pop(ctx);
-                              _routeToSection(
-                                  context, acc.section.toUpperCase());
+                              final sec = acc.section.toUpperCase();
+                              bool isAllowed = true;
+                              if (sec == 'BUYER') {
+                                isAllowed =
+                                    _latestServiceSwitches['buyer_portal'] ==
+                                        true;
+                              } else if (sec == 'SELLER') {
+                                isAllowed =
+                                    _latestServiceSwitches['seller_portal'] ==
+                                        true;
+                              } else if (sec == 'BROKER') {
+                                isAllowed =
+                                    _latestServiceSwitches['broker_portal'] !=
+                                        false;
+                              } else if (sec == 'BILL GENERATOR') {
+                                isAllowed =
+                                    _latestServiceSwitches['bill_generator'] !=
+                                        false;
+                              }
+                              if (!isAllowed) {
+                                _showLockedNotice(context, '$sec Portal');
+                                return;
+                              }
+                              _routeToSection(context, sec);
                             },
                             child: Padding(
                               padding: const EdgeInsets.symmetric(
@@ -478,6 +895,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                                         Text(
                                           acc.name,
                                           style: const TextStyle(
+                                            color: Colors.black87,
                                             fontWeight: FontWeight.bold,
                                             fontSize: 13,
                                           ),
@@ -493,7 +911,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                                       ],
                                     ),
                                   ),
-                                  // REMOVE FROM DEVICE BUTTON
                                   IconButton(
                                     icon: const Icon(
                                       Icons.delete_outline_rounded,
@@ -553,14 +970,54 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ),
         ),
         child: SafeArea(
-          child: StreamBuilder<Map<String, dynamic>>(
+          child: StreamBuilder<dynamic>(
             stream: CloudSyncService.streamServiceSwitches(),
-            builder: (context, snapshot) {
-              final config = snapshot.data ?? const {};
+            builder: (BuildContext context, AsyncSnapshot<dynamic> snapshot) {
+              // Default Buyer & Seller to false (LOCKED) so they cannot be bypassed offline or on iOS init
+              bool enableMarketView = true;
+              bool enableBuyerPortal = false;
+              bool enableSellerPortal = false;
+              bool enableBrokerPortal = true;
+              bool enableBillGenerator = true;
 
-              final bool enableMarketView = config['market_view'] ?? true;
-              final bool enableBuyerPortal = config['buyer_portal'] ?? true;
-              final bool enableSellerPortal = config['seller_portal'] ?? true;
+              if (snapshot.hasData && snapshot.data != null) {
+                try {
+                  final dynamic raw = snapshot.data;
+                  Map<dynamic, dynamic>? dataMap;
+
+                  if (raw is Map) {
+                    dataMap = raw;
+                  } else if (raw is DocumentSnapshot && raw.data() is Map) {
+                    dataMap = raw.data() as Map<dynamic, dynamic>;
+                  }
+
+                  if (dataMap != null && dataMap.isNotEmpty) {
+                    _latestServiceSwitches = Map<String, dynamic>.from(dataMap);
+                    bool parseSwitch(dynamic val, bool defaultValue) {
+                      if (val == null) return defaultValue;
+                      if (val is bool) return val;
+                      if (val is String) {
+                        return val.trim().toLowerCase() == 'true';
+                      }
+                      if (val is num) return val != 0;
+                      return defaultValue;
+                    }
+
+                    enableMarketView =
+                        parseSwitch(dataMap['market_view'], true);
+                    enableBuyerPortal =
+                        parseSwitch(dataMap['buyer_portal'], false);
+                    enableSellerPortal =
+                        parseSwitch(dataMap['seller_portal'], false);
+                    enableBrokerPortal =
+                        parseSwitch(dataMap['broker_portal'], true);
+                    enableBillGenerator =
+                        parseSwitch(dataMap['bill_generator'], true);
+                  }
+                } catch (e) {
+                  debugPrint('Switch parse error: $e');
+                }
+              }
 
               return Center(
                 child: SingleChildScrollView(
@@ -576,7 +1033,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            // Secret Admin Trigger: Long-press this badge to enter Master PIN
                             GestureDetector(
                               behavior: HitTestBehavior.opaque,
                               onLongPress: () => _promptAdminPin(context),
@@ -650,12 +1106,18 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                             fontWeight: FontWeight.w500,
                           ),
                         ),
-                        const SizedBox(height: 24),
+                        const SizedBox(height: 20),
 
-                        // 1. MARKET VIEW
+                        // Subscription Renewal Reminder Banner (approaching within 7 days)
+                        const SubscriptionRenewalBanner(),
+
+                        // Realtime Advertisement & Notice Banner
+                        const DashboardPromoBanner(),
+
+                        // 1. LIVE BHAV
                         _buildSectionCard(
                           context: context,
-                          title: 'MARKET VIEW',
+                          title: 'LIVE BHAV',
                           hindiTitle: 'दैनिक मंडी भाव एवं आवक',
                           description: enableMarketView
                               ? 'Live rates, arrival volumes & commodity lists'
@@ -677,7 +1139,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                                 ),
                               );
                             } else {
-                              _showLockedNotice(context, 'Market View');
+                              _showLockedNotice(context, 'Live Bhav');
                             }
                           },
                         ),
@@ -687,9 +1149,9 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                         _buildSectionCard(
                           context: context,
                           title: 'BUYER',
-                          hindiTitle: 'खरीदार खाता एवं ब्रोकर सूची',
+                          hindiTitle: 'खरीदार खरीद खाता व बही',
                           description: enableBuyerPortal
-                              ? 'Browse brokers, confirm purchases & view khata'
+                              ? 'Buyer purchase records'
                               : 'Buyer portal temporarily closed for maintenance',
                           icon: Icons.storefront_rounded,
                           accentColor: enableBuyerPortal
@@ -714,7 +1176,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                           title: 'SELLER',
                           hindiTitle: 'विक्रेता / किसान खाता',
                           description: enableSellerPortal
-                              ? 'Browse brokers, confirm sales & view khata'
+                              ? 'Seller sales records'
                               : 'Seller portal temporarily closed for maintenance',
                           icon: Icons.agriculture_rounded,
                           accentColor: enableSellerPortal
@@ -733,19 +1195,30 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                         ),
                         const SizedBox(height: 12),
 
-                        // 4. BROKER (ALWAYS ACTIVE)
+                        // 4. BROKER
                         _buildSectionCard(
                           context: context,
                           title: 'BROKER',
                           hindiTitle: 'ब्रोकर बही व टेम्पलेट',
-                          description:
-                              'Deal entry, custom templates & settlement (ACTIVE)',
+                          description: enableBrokerPortal
+                              ? 'Deal entry, custom templates & settlement '
+                              : 'Broker portal temporarily closed for maintenance',
                           icon: Icons.handshake_rounded,
-                          accentColor: const Color(0xFF14B8A6),
-                          badgeText: 'BROKER SYSTEM',
+                          accentColor: enableBrokerPortal
+                              ? const Color(0xFF14B8A6)
+                              : Colors.grey,
+                          badgeText: enableBrokerPortal
+                              ? 'BROKER SYSTEM'
+                              : 'LOCKED 🔒',
                           isPublic: false,
-                          isHighlighted: true,
-                          onTap: () => _routeToSection(context, 'BROKER'),
+                          isHighlighted: enableBrokerPortal,
+                          onTap: () {
+                            if (enableBrokerPortal) {
+                              _routeToSection(context, 'BROKER');
+                            } else {
+                              _showLockedNotice(context, 'Broker Portal');
+                            }
+                          },
                         ),
                         const SizedBox(height: 12),
 
@@ -753,15 +1226,24 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                         _buildSectionCard(
                           context: context,
                           title: 'BILL GENERATOR',
-                          hindiTitle: 'बिल एवं पर्चा जनरेटर',
-                          description:
-                              'Farmer mandi slips, weight tally & statement print',
+                          hindiTitle: 'बिल जनरेटर',
+                          description: enableBillGenerator
+                              ? 'Farmer mandi slips, weight tally & statement print'
+                              : 'Bill generator temporarily closed for maintenance',
                           icon: Icons.receipt_long_rounded,
-                          accentColor: const Color(0xFFA855F7),
-                          badgeText: 'SECURE DESK',
+                          accentColor: enableBillGenerator
+                              ? const Color(0xFFA855F7)
+                              : Colors.grey,
+                          badgeText:
+                              enableBillGenerator ? 'SECURE DESK' : 'LOCKED 🔒',
                           isPublic: false,
-                          onTap: () =>
-                              _routeToSection(context, 'BILL GENERATOR'),
+                          onTap: () {
+                            if (enableBillGenerator) {
+                              _routeToSection(context, 'BILL GENERATOR');
+                            } else {
+                              _showLockedNotice(context, 'Bill Generator');
+                            }
+                          },
                         ),
                         const SizedBox(height: 12),
 
@@ -770,7 +1252,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                           context: context,
                           title: 'CONTACT US & SERVICES',
                           hindiTitle:
-                              'सहायता, सब्सक्रिप्शन, विज्ञापन व WhatsApp रीसेट',
+                              'सहायता, सब्सक्रिप्शन, विज्ञापन व पासवर्ड रीसेट',
                           description:
                               'Promotion banner, WhatsApp password reset, subscription & live help',
                           icon: Icons.support_agent_rounded,
@@ -789,7 +1271,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                         ),
                         const SizedBox(height: 20),
                         const Text(
-                          'Developer- Nik_jodhpur • Mob: 9983325558 • Responsible For Nothing • Only For Educational Purpose • Thnaks for support ',
+                          'Developer- Nik_jodhpur • Mob: 9983325558 • Responsible For Nothing • Only For Educational Purpose • Thanks for support ',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Color(0xFF475569),
@@ -949,6 +1431,9 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 class AdminUsersListScreen extends StatefulWidget {
   const AdminUsersListScreen({super.key});
 
+  static void openServiceSwitchesDialog(BuildContext context) =>
+      _AdminUsersListScreenState._openServiceSwitchesDialog(context);
+
   @override
   State<AdminUsersListScreen> createState() => _AdminUsersListScreenState();
 }
@@ -966,6 +1451,8 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
   Future<void> _checkAuth() async {
     try {
       await CloudSyncService.ensureAuthSession();
+      // Silently purge any unauthenticated party contact stubs from users root collection
+      CloudSyncService.purgeUnauthenticatedContactStubs();
     } catch (e) {
       debugPrint('Admin screen auth session check error: $e');
     } finally {
@@ -975,34 +1462,529 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
     }
   }
 
+  Widget _buildPlanChip({
+    required String label,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? const Color(0xFF10B981)
+              : const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isSelected
+                ? const Color(0xFF10B981)
+                : const Color(0xFF334155),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? Colors.white : const Color(0xFF94A3B8),
+            fontSize: 11,
+            fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openSubscriptionActivationDialog({
+    required String section,
+    required String mobile,
+    required String userName,
+    DateTime? existingRenewalDate,
+    bool isAlreadyActive = false,
+  }) {
+    int selectedDays = 30;
+    String selectedPlan = '1 Month (30 Days)';
+    DateTime renewalDate = existingRenewalDate != null &&
+            existingRenewalDate.isAfter(DateTime.now())
+        ? existingRenewalDate.add(const Duration(days: 30))
+        : DateTime.now().add(const Duration(days: 30));
+    final noteController =
+        TextEditingController(text: 'Monthly Plan Subscription');
+    bool sendWhatsApp = true;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (dialogCtx, setDialogState) {
+            final daysLeft = renewalDate.difference(DateTime.now()).inDays;
+            final dateStr =
+                '${renewalDate.day.toString().padLeft(2, '0')}-${renewalDate.month.toString().padLeft(2, '0')}-${renewalDate.year}';
+
+            return AlertDialog(
+              backgroundColor: const Color(0xFF0F172A),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: const BorderSide(color: Color(0xFF10B981), width: 1.2),
+              ),
+              title: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      isAlreadyActive
+                          ? Icons.edit_calendar_rounded
+                          : Icons.verified_user_rounded,
+                      color: const Color(0xFF10B981),
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isAlreadyActive
+                              ? 'नवीनीकरण तारीख बढ़ाएं'
+                              : 'सदस्यता चालू करें (Turn ON)',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          '$userName ($mobile)',
+                          style: const TextStyle(
+                            color: Color(0xFF38BDF8),
+                            fontSize: 11.5,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'अवधि चुनें (Select Renewal Plan):',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _buildPlanChip(
+                          label: '1 महीना (30 दिन)',
+                          isSelected: selectedDays == 30,
+                          onTap: () {
+                            setDialogState(() {
+                              selectedDays = 30;
+                              selectedPlan = '1 Month (30 Days)';
+                              renewalDate = DateTime.now()
+                                  .add(const Duration(days: 30));
+                            });
+                          },
+                        ),
+                        _buildPlanChip(
+                          label: '3 महीने (90 दिन)',
+                          isSelected: selectedDays == 90,
+                          onTap: () {
+                            setDialogState(() {
+                              selectedDays = 90;
+                              selectedPlan = '3 Months (90 Days)';
+                              renewalDate = DateTime.now()
+                                  .add(const Duration(days: 90));
+                            });
+                          },
+                        ),
+                        _buildPlanChip(
+                          label: '6 महीने (180 दिन)',
+                          isSelected: selectedDays == 180,
+                          onTap: () {
+                            setDialogState(() {
+                              selectedDays = 180;
+                              selectedPlan = '6 Months (180 Days)';
+                              renewalDate = DateTime.now()
+                                  .add(const Duration(days: 180));
+                            });
+                          },
+                        ),
+                        _buildPlanChip(
+                          label: '1 वर्ष (365 दिन)',
+                          isSelected: selectedDays == 365,
+                          onTap: () {
+                            setDialogState(() {
+                              selectedDays = 365;
+                              selectedPlan = '1 Year (365 Days)';
+                              renewalDate = DateTime.now()
+                                  .add(const Duration(days: 365));
+                            });
+                          },
+                        ),
+                        _buildPlanChip(
+                          label: '📅 कस्टम तारीख',
+                          isSelected: selectedDays == 0,
+                          onTap: () async {
+                            final picked = await showDatePicker(
+                              context: dialogCtx,
+                              initialDate: renewalDate,
+                              firstDate: DateTime.now(),
+                              lastDate: DateTime.now()
+                                  .add(const Duration(days: 1825)),
+                            );
+                            if (!dialogCtx.mounted) return;
+                            if (picked != null) {
+                              setDialogState(() {
+                                selectedDays = 0;
+                                selectedPlan = 'Custom Plan';
+                                renewalDate = picked;
+                              });
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+
+                    // Display Current Calculated Renewal Date
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF16253B),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color:
+                              const Color(0xFF10B981).withValues(alpha: 0.5),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.calendar_today_rounded,
+                              color: Color(0xFF10B981), size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'नई नवीनीकरण तारीख (Renewal Date):',
+                                  style: TextStyle(
+                                    color: Color(0xFF94A3B8),
+                                    fontSize: 10.5,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '$dateStr (${daysLeft > 0 ? '$daysLeft दिन शेष' : 'आज'})',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13.5,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.date_range,
+                                color: Color(0xFF38BDF8), size: 20),
+                            tooltip: 'कैलेंडर से चुनें',
+                            onPressed: () async {
+                              final picked = await showDatePicker(
+                                context: dialogCtx,
+                                initialDate: renewalDate,
+                                firstDate: DateTime.now(),
+                                lastDate: DateTime.now()
+                                    .add(const Duration(days: 1825)),
+                              );
+                              if (!dialogCtx.mounted) return;
+                              if (picked != null) {
+                                setDialogState(() {
+                                  selectedDays = 0;
+                                  selectedPlan = 'Custom Date';
+                                  renewalDate = picked;
+                                });
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Notes / Amount Field
+                    TextField(
+                      controller: noteController,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                      decoration: InputDecoration(
+                        labelText: 'प्लान विवरण / नोट (वैकल्पिक)',
+                        labelStyle: const TextStyle(
+                            color: Colors.white54, fontSize: 12),
+                        filled: true,
+                        fillColor: const Color(0xFF16253B),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+
+                    // WhatsApp confirmation checkbox
+                    InkWell(
+                      onTap: () {
+                        setDialogState(() => sendWhatsApp = !sendWhatsApp);
+                      },
+                      child: Row(
+                        children: [
+                          Checkbox(
+                            value: sendWhatsApp,
+                            activeColor: const Color(0xFF25D366),
+                            onChanged: (val) {
+                              setDialogState(() => sendWhatsApp = val ?? true);
+                            },
+                          ),
+                          const Expanded(
+                            child: Text(
+                              '📲 यूज़र को WhatsApp पर तुरंत रसीद व नवीनीकरण सूचना भेजें',
+                              style: TextStyle(
+                                  color: Colors.white70, fontSize: 11.5),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('रद्द करें (Cancel)',
+                      style: TextStyle(color: Colors.white54)),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                  icon: const Icon(Icons.check_circle_rounded, size: 16),
+                  label: Text(
+                    isAlreadyActive
+                        ? 'तारीख अपडेट करें'
+                        : 'चालू करें (Turn ON)',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    await _activateUserWithRenewal(
+                      section: section,
+                      mobile: mobile,
+                      userName: userName,
+                      renewalDate: renewalDate,
+                      plan: selectedPlan,
+                      note: noteController.text.trim(),
+                      sendWhatsApp: sendWhatsApp,
+                    );
+                  },
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _activateUserWithRenewal({
+    required String section,
+    required String mobile,
+    required String userName,
+    required DateTime renewalDate,
+    required String plan,
+    required String note,
+    required bool sendWhatsApp,
+  }) async {
+    try {
+      await CloudSyncService.activateSubscriptionWithRenewal(
+        section: section,
+        mobile: mobile,
+        renewalDate: renewalDate,
+        plan: plan,
+        note: note,
+        activatedBy: 'ADMIN',
+      );
+
+      final dateStr =
+          '${renewalDate.day.toString().padLeft(2, '0')}-${renewalDate.month.toString().padLeft(2, '0')}-${renewalDate.year}';
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              '✅ $userName की सदस्यता सक्रिय हो गई (नवीनीकरण: $dateStr)'),
+          backgroundColor: const Color(0xFF10B981),
+        ),
+      );
+
+      if (sendWhatsApp) {
+        final cleanMob = CloudSyncService.cleanMobileNumber(mobile);
+        if (cleanMob.isNotEmpty) {
+          final message = '''नमस्ते $userName जी! 🙏
+Mandi Trade Portal पर आपकी सदस्यता सक्रिय (ACTIVATED) कर दी गई है।
+
+📋 सदस्यता विवरण:
+• खाता आईडी: $cleanMob
+• सेवा पोर्टल: $section
+• प्लान: $plan
+• नवीनीकरण तारीख (Renewal Date): $dateStr
+
+मंडी के लाइव भाव, सौदे एवं खाता सेवाओं का लाभ उठाने के लिए ऐप खोलें।
+किसी भी सहायता हेतु संपर्क करें: 9983325558
+
+धन्यवाद!
+Mandi Trade Portal Support''';
+
+          final uri = Uri.parse(
+              'https://wa.me/91$cleanMob?text=${Uri.encodeComponent(message)}');
+          if (await canLaunchUrl(uri)) {
+            await launchUrl(uri, mode: LaunchMode.externalApplication);
+          }
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('त्रुटि: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _sendWhatsAppRenewalReminder({
+    required String mobile,
+    required String userName,
+    required String section,
+    required DateTime? renewalDate,
+  }) async {
+    final cleanMob = CloudSyncService.cleanMobileNumber(mobile);
+    if (cleanMob.isEmpty) return;
+
+    final String dateStr = renewalDate != null
+        ? '${renewalDate.day.toString().padLeft(2, '0')}-${renewalDate.month.toString().padLeft(2, '0')}-${renewalDate.year}'
+        : 'शीघ्र देय (Due Soon)';
+    final String daysRemainingText = renewalDate != null
+        ? '${renewalDate.difference(DateTime.now()).inDays} दिन शेष'
+        : 'कृपया संपर्क करें';
+
+    final message = '''नमस्ते $userName जी! 🙏
+यह Mandi Trade Portal से आपकी सदस्यता नवीनीकरण (Renewal Reminder) की सूचना है।
+
+📋 खाता विवरण:
+• यूज़र आईडी: $cleanMob
+• पोर्टल: $section
+• नवीनीकरण तारीख (Renewal Date): $dateStr ($daysRemainingText)
+
+मंडी के लाइव भाव, सौदे एवं खाता सेवाएं बिना रुकावट चालू रखने के लिए कृपया समय पर अपनी सदस्यता का नवीनीकरण कराएं।
+
+भुगतान / सहायता हेतु संपर्क करें: 9983325558
+धन्यवाद!
+Mandi Trade Portal Support''';
+
+    final uri = Uri.parse(
+        'https://wa.me/91$cleanMob?text=${Uri.encodeComponent(message)}');
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('WhatsApp खोलने में असमर्थ')),
+      );
+    }
+  }
+
   Future<void> _toggleUserLock({
     required String section,
     required String mobile,
     required bool currentLockedState,
+    String userName = '',
   }) async {
+    if (!currentLockedState) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF0F172A),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent),
+              SizedBox(width: 8),
+              Text('Confirm Lock / Due',
+                  style: TextStyle(color: Colors.white, fontSize: 16)),
+            ],
+          ),
+          content: Text(
+            'क्या आप $userName ($mobile) का खाता ब्लॉक/सब्सक्रिप्शन ओवरड्यू करना चाहते हैं?',
+            style: const TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orangeAccent.shade700),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Lock Account',
+                  style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true) return;
+      if (!mounted) return;
+    }
+
     try {
       await CloudSyncService.setLockStatus(
         section: section,
         mobile: mobile,
         isLocked: !currentLockedState,
       );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              !currentLockedState
-                  ? 'Account locked (Subscription overdue).'
-                  : 'Account unlocked (Access active).',
-            ),
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            !currentLockedState
+                ? 'Account locked (Subscription overdue).'
+                : 'Account unlocked (Access active).',
           ),
-        );
-      }
+        ),
+      );
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error updating account: $e')),
-        );
-      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error updating account: $e')),
+      );
     }
   }
 
@@ -1038,6 +2020,15 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
     if (confirm == true) {
       try {
         await CloudSyncService.purgeUserAccount(mobile, section: section);
+
+        TelegramNotificationService.notifyAccountDeleted(
+          name: userName,
+          mobile: mobile,
+          section: section,
+          deletedBy: 'ADMIN (Master PIN Panel)',
+          reason: 'Manual deletion by administrator',
+        );
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Account $userName deleted successfully.')),
@@ -1053,17 +2044,1080 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
     }
   }
 
+  void _showRearrangeCollectionsDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF0F172A),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: Color(0xFF38BDF8), width: 1.2),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.auto_fix_high_rounded, color: Color(0xFF38BDF8)),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'डेटा व्यवस्थित करें (Rearrange & Clean)',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: const Text(
+            'यह टूल फायरबेस कलेक्शन्स को "1 User = 1 Personal Folder" आर्किटेक्चर में पूरी तरह व्यवस्थित करेगा:\n\n'
+            '1. सभी पुराने डुप्लीकेट डॉक्युमेंट्स (BROKER_... आदि) को सिंगल पर्सनल फोल्डर (users/{mobile}) में मर्ज करेगा।\n'
+            '2. ब्रोकर के बिना पासवर्ड वाले पार्टी संपर्कों (PAGAL जैसे स्टब्स) को users रूट से हटाएगा।\n'
+            '3. सभी पुराने सौदों को AES-256 एन्क्रिप्शन से फायरबेस में सुरक्षित/गोपनीय करेगा।\n'
+            '4. सब-कलेक्शन्स (records, parties, subscriptions) को सही फोल्डर में सुरक्षित माइग्रेट करेगा।\n'
+            '5. फैंटम (इटैलिक) डॉक्युमेंट्स को ठीक करेगा।\n\n'
+            'क्या आप डेटा क्लीनअप और रीअरेंज शुरू करना चाहते हैं?',
+            style:
+                TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.5),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child:
+                  const Text('CANCEL', style: TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0284C7),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+              icon: const Icon(Icons.check_circle_outline, size: 16),
+              label: const Text('START CLEANUP (शुरू करें)'),
+              onPressed: () async {
+                Navigator.pop(ctx);
+                _runRearrangeCollections();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _runRearrangeCollections() async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const Center(
+        child: Card(
+          color: Color(0xFF16253B),
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(color: Color(0xFF38BDF8)),
+                SizedBox(width: 16),
+                Text(
+                  'डेटाबेस व्यवस्थित किया जा रहा है...\nRearranging Firestore Collections...',
+                  style: TextStyle(color: Colors.white, fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    try {
+      final res =
+          await CloudSyncService.rearrangeAndCleanFirestoreCollections();
+      if (mounted) {
+        Navigator.pop(context); // Close progress dialog
+
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF0F172A),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: const BorderSide(color: Color(0xFF10B981), width: 1.2),
+            ),
+            title: const Row(
+              children: [
+                Icon(Icons.check_circle_rounded, color: Color(0xFF10B981)),
+                SizedBox(width: 8),
+                Text(
+                  'सफलतापूर्वक व्यवस्थित (Completed)',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            content: Text(
+              'फायरबेस कलेक्शन्स सफलतापूर्वक व्यवस्थित हो गए हैं:\n\n'
+              '• कुल स्कैन किए गए यूज़र्स: ${res['scanned'] ?? 0}\n'
+              '• डुप्लीकेट/पुराने प्रीफ़िक्स हटाए गए: ${res['prefixed_migrated'] ?? 0}\n'
+              '• अनधिकृत पार्टी स्टब्स (Password: N/A) हटाए गए: ${res['stubs_purged'] ?? 0}\n'
+              '• पुराने सौदे AES-256 से एन्क्रिप्ट/गोपनीय किए गए: ${res['legacy_saudas_encrypted'] ?? 0}\n'
+              '• वैध फोल्डर्स फिक्स किए गए: ${res['phantom_fixed'] ?? 0}\n'
+              '• कंसोलिडेट किए गए ब्रोकर प्रोफाइल्स: ${res['brokers_consolidated'] ?? 0}\n\n'
+              'अब प्रत्येक वास्तविक यूज़र का केवल एक सिंगल पर्सनल फ़ोल्डर (users/{mobile}) है और सभी सौदे सुरक्षित हैं।',
+              style: const TextStyle(
+                  color: Color(0xFFCBD5E1), fontSize: 13, height: 1.5),
+            ),
+            actions: [
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF10B981),
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context); // Close progress dialog
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Cleanup failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  static void _openServiceSwitchesDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return Dialog(
+          backgroundColor: const Color(0xFF0F172A),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: Color(0xFF334155), width: 1.2),
+          ),
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 520),
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(
+                        Icons.admin_panel_settings_rounded,
+                        color: Color(0xFF10B981),
+                        size: 22,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'PORTAL SERVICES CONTROL',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 0.6,
+                            ),
+                          ),
+                          Text(
+                            'सेवाएं लॉक / अनलॉक नियंत्रण',
+                            style: TextStyle(
+                              color: Color(0xFF94A3B8),
+                              fontSize: 11.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white60),
+                      onPressed: () => Navigator.pop(ctx),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                // Batch Actions: Unlock All / Lock All
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF10B981),
+                          side: const BorderSide(color: Color(0xFF10B981)),
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                        icon: const Icon(Icons.lock_open_rounded, size: 14),
+                        label: const Text(
+                          'Unlock All (सभी चालू)',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        onPressed: () async {
+                          await CloudSyncService.setAllServiceSwitches({
+                            'market_view': true,
+                            'buyer_portal': true,
+                            'seller_portal': true,
+                            'broker_portal': true,
+                            'bill_generator': true,
+                          });
+                          if (ctx.mounted) {
+                            ScaffoldMessenger.of(ctx).showSnackBar(
+                              const SnackBar(
+                                content:
+                                    Text('All services unlocked successfully!'),
+                                backgroundColor: Color(0xFF10B981),
+                              ),
+                            );
+                          }
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.redAccent,
+                          side: const BorderSide(color: Colors.redAccent),
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                        icon: const Icon(Icons.lock_outline_rounded, size: 14),
+                        label: const Text(
+                          'Lock All (सभी बंद)',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        onPressed: () async {
+                          await CloudSyncService.setAllServiceSwitches({
+                            'market_view': false,
+                            'buyer_portal': false,
+                            'seller_portal': false,
+                            'broker_portal': false,
+                            'bill_generator': false,
+                          });
+                          if (ctx.mounted) {
+                            ScaffoldMessenger.of(ctx).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                    'All services locked for maintenance.'),
+                                backgroundColor: Colors.redAccent,
+                              ),
+                            );
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                const Divider(color: Color(0xFF334155), height: 1),
+                const SizedBox(height: 10),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: StreamBuilder<dynamic>(
+                      stream: CloudSyncService.streamServiceSwitches(),
+                      builder: (context, snapshot) {
+                        Map<String, dynamic> dataMap = {};
+                        if (snapshot.hasData && snapshot.data != null) {
+                          final dynamic raw = snapshot.data;
+                          if (raw is Map) {
+                            dataMap = Map<String, dynamic>.from(raw);
+                          } else if (raw is DocumentSnapshot &&
+                              raw.data() is Map) {
+                            dataMap =
+                                Map<String, dynamic>.from(raw.data() as Map);
+                          }
+                        }
+
+                        bool parseSwitch(String key, bool defaultValue) {
+                          final val = dataMap[key];
+                          if (val == null) return defaultValue;
+                          if (val is bool) return val;
+                          if (val is String) {
+                            return val.trim().toLowerCase() == 'true';
+                          }
+                          if (val is num) return val != 0;
+                          return defaultValue;
+                        }
+
+                        final serviceList = [
+                          {
+                            'key': 'market_view',
+                            'title': 'Live Bhav',
+                            'hindiTitle': 'दैनिक मंडी भाव एवं आवक',
+                            'desc':
+                                'Local Mandi, NCDEX live ticker & Analyzer',
+                            'icon': Icons.show_chart_rounded,
+                            'color': const Color(0xFF10B981),
+                            'default': true,
+                          },
+                          {
+                            'key': 'show_analyzer',
+                            'title': 'Show Analyzer Tab',
+                            'hindiTitle': 'कमोडिटी एनालाइज़र टैब (दिखाएं / छिपाएं)',
+                            'desc':
+                                'Live Bhav में Analyzer टैब को छुपाएं या दिखाएं',
+                            'icon': Icons.visibility_rounded,
+                            'color': const Color(0xFFA855F7),
+                            'default': true,
+                          },
+                          {
+                            'key': 'buyer_portal',
+                            'title': 'Buyer Portal',
+                            'hindiTitle': 'खरीदार खाता एवं ब्रोकर सूची',
+                            'desc':
+                                'Buyer login, purchase records & private khata',
+                            'icon': Icons.storefront_rounded,
+                            'color': const Color(0xFF38BDF8),
+                            'default': false,
+                          },
+                          {
+                            'key': 'seller_portal',
+                            'title': 'Seller Portal',
+                            'hindiTitle': 'विक्रेता / किसान खाता',
+                            'desc':
+                                'Farmer portal, sauda slips & sales settlement',
+                            'icon': Icons.agriculture_rounded,
+                            'color': const Color(0xFFF59E0B),
+                            'default': false,
+                          },
+                          {
+                            'key': 'broker_portal',
+                            'title': 'Broker Portal',
+                            'hindiTitle': 'ब्रोकर बही व टेम्पलेट',
+                            'desc':
+                                'Broker deals entry, 4 WhatsApp templates & ledger',
+                            'icon': Icons.handshake_rounded,
+                            'color': const Color(0xFF14B8A6),
+                            'default': true,
+                          },
+                          {
+                            'key': 'bill_generator',
+                            'title': 'Bill Generator',
+                            'hindiTitle': 'बिल जनरेटर',
+                            'desc':
+                                'Farmer weight slips, statement print & PDF slips',
+                            'icon': Icons.receipt_long_rounded,
+                            'color': const Color(0xFFA855F7),
+                            'default': true,
+                          },
+                        ];
+
+                        return Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: serviceList.map((svc) {
+                            final key = svc['key'] as String;
+                            final isEnabled =
+                                parseSwitch(key, svc['default'] as bool);
+                            final color = svc['color'] as Color;
+
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 10),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF16253B),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: isEnabled
+                                      ? color.withValues(alpha: 0.45)
+                                      : Colors.redAccent
+                                          .withValues(alpha: 0.35),
+                                  width: 1.2,
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: color.withValues(alpha: 0.15),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Icon(
+                                      svc['icon'] as IconData,
+                                      color: color,
+                                      size: 20,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Text(
+                                              svc['title'] as String,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 13,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 6,
+                                                      vertical: 1.5),
+                                              decoration: BoxDecoration(
+                                                color: isEnabled
+                                                    ? const Color(0xFF10B981)
+                                                        .withValues(alpha: 0.2)
+                                                    : Colors.redAccent
+                                                        .withValues(alpha: 0.2),
+                                                borderRadius:
+                                                    BorderRadius.circular(4),
+                                                border: Border.all(
+                                                  color: isEnabled
+                                                      ? const Color(0xFF10B981)
+                                                      : Colors.redAccent,
+                                                  width: 0.8,
+                                                ),
+                                              ),
+                                              child: Text(
+                                                isEnabled
+                                                    ? 'ACTIVE / UNLOCKED'
+                                                    : 'LOCKED',
+                                                style: TextStyle(
+                                                  color: isEnabled
+                                                      ? const Color(0xFF10B981)
+                                                      : Colors.redAccent,
+                                                  fontSize: 9.5,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          svc['hindiTitle'] as String,
+                                          style: const TextStyle(
+                                            color: Color(0xFF94A3B8),
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 1),
+                                        Text(
+                                          svc['desc'] as String,
+                                          style: const TextStyle(
+                                            color: Color(0xFF64748B),
+                                            fontSize: 10,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  Switch(
+                                    value: isEnabled,
+                                    activeThumbColor: const Color(0xFF10B981),
+                                    activeTrackColor: const Color(0xFF10B981)
+                                        .withValues(alpha: 0.4),
+                                    inactiveThumbColor: Colors.redAccent,
+                                    inactiveTrackColor:
+                                        Colors.redAccent.withValues(alpha: 0.3),
+                                    onChanged: (newVal) async {
+                                      try {
+                                        await CloudSyncService.setServiceSwitch(
+                                          key,
+                                          newVal,
+                                        );
+                                        if (context.mounted) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                              content: Text(
+                                                '${svc['title']} ${newVal ? "UNLOCKED (Active)" : "LOCKED (Closed)"}.',
+                                              ),
+                                              duration:
+                                                  const Duration(seconds: 2),
+                                            ),
+                                          );
+                                        }
+                                      } catch (err) {
+                                        if (context.mounted) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                              content: Text(
+                                                  'Error updating switch: $err'),
+                                            ),
+                                          );
+                                        }
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
+                            );
+                          }).toList(),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  '💡 Changes sync instantly across all user devices through Firestore.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF64748B),
+                    fontSize: 10.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF0B1320),
       appBar: AppBar(
-        title: const Text('ALL REGISTERED USERS & PASSWORDS'),
+        title: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'MASTER ADMIN ACCESS',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              'Users, Passwords & Service Controls',
+              style: TextStyle(fontSize: 11, color: Colors.white70),
+            ),
+          ],
+        ),
         backgroundColor: const Color(0xFF16253B),
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.play_circle_outline_rounded,
+                color: Color(0xFF38BDF8)),
+            tooltip: 'Run GitHub NCDEX Workflow',
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (_) => const GitHubWorkflowDialog(),
+              );
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.campaign_rounded, color: Color(0xFFFF5722)),
+            tooltip: 'पोस्टर व विज्ञापन लगाएं (Post Poster)',
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (_) => const EditPromoDialog(),
+              );
+            },
+          ),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: TextButton.icon(
+              style: TextButton.styleFrom(
+                backgroundColor:
+                    const Color(0xFF10B981).withValues(alpha: 0.15),
+                foregroundColor: const Color(0xFF10B981),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  side: const BorderSide(color: Color(0xFF10B981), width: 1.2),
+                ),
+              ),
+              icon: const Icon(Icons.tune_rounded, size: 16),
+              label: const Text(
+                'Lock / Unlock Services',
+                style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+              ),
+              onPressed: () => _openServiceSwitchesDialog(context),
+            ),
+          ),
+        ],
       ),
       body: Column(
         children: [
+          // PROMINENT ADVERTISEMENT & POSTER SERVICE CARD
+          Container(
+            margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF16253B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFFFF5722).withValues(alpha: 0.5),
+                width: 1.4,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.25),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(9),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFF5722).withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.campaign_rounded,
+                      color: Color(0xFFFF5722), size: 22),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'ADVERTISEMENT & POSTER SERVICE',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'विज्ञापन पोस्टर सेवा (डैशबोर्ड व ऐप स्टार्ट पर दिखाएं)',
+                        style: TextStyle(
+                          color: Color(0xFF94A3B8),
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFF5722),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  icon: const Icon(Icons.post_add_rounded, size: 16),
+                  label: const Text(
+                    'Post / Edit',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (_) => const EditPromoDialog(),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+
+          // PROMINENT GITHUB WORKFLOW RUNNER CARD
+          Container(
+            margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF16253B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF38BDF8).withValues(alpha: 0.45),
+                width: 1.4,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.25),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(9),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF38BDF8).withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.play_circle_fill_rounded,
+                      color: Color(0xFF38BDF8), size: 22),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'GITHUB NCDEX WORKFLOW',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'NCDEX स्क्रैपर वर्कफ़्लो ट्रिगर करें व लाइव स्टेटस देखें',
+                        style: TextStyle(
+                          color: Color(0xFF94A3B8),
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0284C7),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  icon: const Icon(Icons.bolt_rounded, size: 16),
+                  label: const Text(
+                    'Run Workflow',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (_) => const GitHubWorkflowDialog(),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+
+          // PROMINENT LOCK / UNLOCK SERVICES CONTROL CARD
+          Container(
+            margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF16253B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF10B981).withValues(alpha: 0.4),
+                width: 1.4,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.25),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(9),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.tune_rounded,
+                      color: Color(0xFF10B981), size: 22),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'LOCK / UNLOCK SERVICES',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13.5,
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'पोर्टल सेवाएं चालू / बंद करें (लाइव भाव, बायर, सेलर, ब्रोकर, बिल)',
+                        style: TextStyle(
+                          color: Color(0xFF94A3B8),
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  icon: const Icon(Icons.lock_open_rounded, size: 15),
+                  label: const Text(
+                    'Switches',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                  onPressed: () => _openServiceSwitchesDialog(context),
+                ),
+              ],
+            ),
+          ),
+
+          // REARRANGE & CLEAN FIRESTORE COLLECTIONS CARD
+          Container(
+            margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF16253B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF38BDF8).withValues(alpha: 0.4),
+                width: 1.2,
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF38BDF8).withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.auto_fix_high_rounded,
+                      color: Color(0xFF38BDF8), size: 20),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'REARRANGE & CLEAN COLLECTIONS',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12.5,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        '1 User = 1 Folder (डुप्लीकेट व फैंटम डॉक्युमेंट्स हटाएं)',
+                        style: TextStyle(
+                          color: Color(0xFF94A3B8),
+                          fontSize: 10.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0284C7),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  icon: const Icon(Icons.cleaning_services_rounded, size: 14),
+                  label: const Text(
+                    'Clean & Fix',
+                    style:
+                        TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                  ),
+                  onPressed: () => _showRearrangeCollectionsDialog(context),
+                ),
+              ],
+            ),
+          ),
+
+          // HIDE / UNHIDE ANALYZER CARD
+          Container(
+            margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF16253B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFFA855F7).withValues(alpha: 0.4),
+                width: 1.2,
+              ),
+            ),
+            child: StreamBuilder<dynamic>(
+              stream: CloudSyncService.streamServiceSwitches(),
+              builder: (context, switchSnap) {
+                bool showAnalyzer = true;
+                if (switchSnap.hasData && switchSnap.data != null) {
+                  final dynamic raw = switchSnap.data;
+                  if (raw is Map && raw['show_analyzer'] != null) {
+                    final v = raw['show_analyzer'];
+                    showAnalyzer =
+                        v is bool ? v : (v.toString().toLowerCase() == 'true');
+                  }
+                }
+
+                return Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: showAnalyzer
+                            ? const Color(0xFF10B981).withValues(alpha: 0.18)
+                            : Colors.redAccent.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(
+                        showAnalyzer
+                            ? Icons.visibility_rounded
+                            : Icons.visibility_off_rounded,
+                        color: showAnalyzer
+                            ? const Color(0xFF10B981)
+                            : Colors.redAccent,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'COMMODITY ANALYZER (एनालाइज़र)',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12.5,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            showAnalyzer
+                                ? 'स्थिति: दिख रहा है (Live Bhav में एक्टिव)'
+                                : 'स्थिति: छिपा हुआ है (Live Bhav में छुपा है)',
+                            style: TextStyle(
+                              color: showAnalyzer
+                                  ? const Color(0xFF10B981)
+                                  : Colors.redAccent,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: showAnalyzer
+                            ? Colors.red.shade800
+                            : const Color(0xFF10B981),
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      icon: Icon(
+                        showAnalyzer
+                            ? Icons.visibility_off_rounded
+                            : Icons.visibility_rounded,
+                        size: 14,
+                      ),
+                      label: Text(
+                        showAnalyzer
+                            ? 'Hide Analyzer (छिपाएं)'
+                            : 'Unhide Analyzer (दिखाएं)',
+                        style: const TextStyle(
+                            fontSize: 11.5, fontWeight: FontWeight.bold),
+                      ),
+                      onPressed: () async {
+                        final newStatus = !showAnalyzer;
+                        await CloudSyncService.setServiceSwitch(
+                            'show_analyzer', newStatus);
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                newStatus
+                                    ? '👁️ एनालाइज़र अब Live Bhav में दिखेगा (Unhidden)!'
+                                    : '🙈 एनालाइज़र Live Bhav से छिपा दिया गया है (Hidden)!',
+                              ),
+                              backgroundColor: newStatus
+                                  ? const Color(0xFF10B981)
+                                  : Colors.orangeAccent,
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
           Padding(
             padding: const EdgeInsets.all(12),
             child: TextField(
@@ -1089,12 +3143,12 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
                 ? const Center(
                     child: CircularProgressIndicator(color: Color(0xFFFF5722)),
                   )
-                : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    // Connects directly to users collection
+                : StreamBuilder<dynamic>(
                     stream: FirebaseFirestore.instance
                         .collection('users')
                         .snapshots(),
-                    builder: (context, snapshot) {
+                    builder: (BuildContext context,
+                        AsyncSnapshot<dynamic> snapshot) {
                       if (snapshot.connectionState == ConnectionState.waiting) {
                         return const Center(
                           child: CircularProgressIndicator(
@@ -1115,7 +3169,43 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
                         );
                       }
 
-                      final docs = snapshot.data?.docs ?? [];
+                      final List<dynamic> rawDocs =
+                          (snapshot.data?.docs as List<dynamic>?) ?? [];
+
+                      // Deduplicate users list by clean 10-digit mobile number & filter out contact stubs
+                      final Map<String, dynamic> uniqueByMobile = {};
+                      for (final doc in rawDocs) {
+                        final data = (doc.data() as Map?) ?? {};
+                        final docId = doc.id?.toString() ?? '';
+                        final rawMob =
+                            (data['mobile'] ?? data['phone'] ?? '').toString();
+                        String cleanMob = CloudSyncService.cleanMobileNumber(
+                            rawMob.isNotEmpty ? rawMob : docId);
+                        if (cleanMob.isEmpty) {
+                          cleanMob = CloudSyncService.cleanMobileNumber(
+                              docId.split('_').last);
+                        }
+                        final key = cleanMob.isNotEmpty ? cleanMob : docId;
+
+                        // Check credentials
+                        final pwd = (data['password'] ?? data['pin'] ?? '').toString().trim();
+                        final role = (data['role'] ?? data['section'] ?? '').toString().toLowerCase();
+                        final isBroker = role == 'broker' || docId.startsWith('BROKER_');
+                        final hasCreds = pwd.isNotEmpty && pwd != 'N/A';
+
+                        // Ignore broker contact stubs without login credentials
+                        if (!isBroker && !hasCreds) {
+                          continue;
+                        }
+
+                        if (!uniqueByMobile.containsKey(key)) {
+                          uniqueByMobile[key] = doc;
+                        } else if (!docId.contains('_')) {
+                          uniqueByMobile[key] =
+                              doc; // Prefer canonical personal folder
+                        }
+                      }
+                      final List<dynamic> docs = uniqueByMobile.values.toList();
 
                       if (docs.isEmpty) {
                         return const Center(
@@ -1128,19 +3218,21 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
                         );
                       }
 
-                      final filtered = docs.where((d) {
-                        final data = d.data();
-                        final name = (data['name'] ??
-                                data['userName'] ??
-                                data['firmName'] ??
+                      final filtered = docs.where((dynamic d) {
+                        final dynamic rawData = d.data();
+                        if (rawData is! Map) return false;
+                        final name = (rawData['name'] ??
+                                rawData['userName'] ??
+                                rawData['firmName'] ??
                                 '')
                             .toString()
                             .toLowerCase();
-                        final mobile = (data['mobile'] ?? data['phone'] ?? d.id)
-                            .toString()
-                            .toLowerCase();
+                        final mobile =
+                            (rawData['mobile'] ?? rawData['phone'] ?? d.id)
+                                .toString()
+                                .toLowerCase();
                         final section =
-                            (data['section'] ?? '').toString().toLowerCase();
+                            (rawData['section'] ?? '').toString().toLowerCase();
 
                         if (_searchFilter.isEmpty) return true;
                         return name.contains(_searchFilter) ||
@@ -1163,8 +3255,10 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
                         itemCount: filtered.length,
                         separatorBuilder: (_, __) => const SizedBox(height: 10),
                         itemBuilder: (context, index) {
-                          final doc = filtered[index];
-                          final data = doc.data();
+                          final dynamic doc = filtered[index];
+                          final Map<dynamic, dynamic> data =
+                              (doc.data() as Map?) ?? {};
+                          final String docId = doc.id?.toString() ?? '';
 
                           final String name = (data['name'] ??
                                   data['userName'] ??
@@ -1176,13 +3270,13 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
                                       .toString()
                                       .isNotEmpty
                                   ? (data['mobile'] ?? data['phone']).toString()
-                                  : doc.id.split('_').last;
+                                  : docId.split('_').last;
                           final String password =
                               (data['password'] ?? data['pin'] ?? 'N/A')
                                   .toString();
                           final String section = (data['section'] ??
-                                  (doc.id.contains('_')
-                                      ? doc.id.split('_').first
+                                  (docId.contains('_')
+                                      ? docId.split('_').first
                                       : 'GENERAL'))
                               .toString()
                               .toUpperCase();
@@ -1192,6 +3286,18 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
                               data['subscription_due'] == true ||
                               data['account_status'] == 'locked' ||
                               data['account_status'] == 'suspended';
+
+                          final DateTime? renewalDate =
+                              CloudSyncService.parseRenewalDate(data);
+                          final int? daysLeft =
+                              renewalDate?.difference(DateTime.now()).inDays;
+                          final String planName = (data['subscription_plan'] ??
+                                  (data['subscription'] is Map
+                                      ? data['subscription']['plan']
+                                      : null) ??
+                                  data['subscriptionPlan'] ??
+                                  '1 Month')
+                              .toString();
 
                           return Container(
                             padding: const EdgeInsets.all(14),
@@ -1241,7 +3347,7 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
                                       ),
                                       child: Text(
                                         isLocked
-                                            ? 'LOCKED / DUE'
+                                            ? 'SUBSCRIPTION DUE'
                                             : 'ACTIVE SUBSCRIPTION',
                                         style: TextStyle(
                                           color: isLocked
@@ -1319,20 +3425,173 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
                                         color: Colors.white38, fontSize: 11.5),
                                   ),
                                 ],
+                                // SUBSCRIPTION RENEWAL STATUS BOX
+                                Container(
+                                  margin: const EdgeInsets.only(top: 8),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF0F172A),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: renewalDate == null
+                                          ? const Color(0xFF334155)
+                                          : (daysLeft != null && daysLeft < 0)
+                                              ? Colors.redAccent
+                                                  .withValues(alpha: 0.6)
+                                              : (daysLeft != null &&
+                                                      daysLeft <= 7)
+                                                  ? Colors.amber
+                                                      .withValues(alpha: 0.7)
+                                                  : const Color(0xFF10B981)
+                                                      .withValues(alpha: 0.5),
+                                      width: 1.1,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.event_repeat_rounded,
+                                        size: 16,
+                                        color: renewalDate == null
+                                            ? Colors.white54
+                                            : (daysLeft != null && daysLeft < 0)
+                                                ? Colors.redAccent
+                                                : (daysLeft != null &&
+                                                        daysLeft <= 7)
+                                                    ? Colors.amber
+                                                    : const Color(0xFF10B981),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              renewalDate != null
+                                                  ? 'Renewal: ${renewalDate.day.toString().padLeft(2, '0')}-${renewalDate.month.toString().padLeft(2, '0')}-${renewalDate.year} ($planName)'
+                                                  : 'Renewal: No Date Set ($planName)',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              renewalDate == null
+                                                  ? 'Tap "Extend Date" to set renewal'
+                                                  : (daysLeft != null &&
+                                                          daysLeft < 0)
+                                                      ? '⚠️ Subscription overdue by ${-daysLeft} days!'
+                                                      : (daysLeft != null &&
+                                                              daysLeft <= 7)
+                                                          ? '🔔 Reminder: Only $daysLeft days left!'
+                                                          : 'Active Subscription ($daysLeft days left)',
+                                              style: TextStyle(
+                                                color: renewalDate == null
+                                                    ? Colors.white38
+                                                    : (daysLeft != null &&
+                                                            daysLeft < 0)
+                                                        ? Colors.redAccent
+                                                        : (daysLeft != null &&
+                                                                daysLeft <= 7)
+                                                            ? Colors.amber
+                                                            : const Color(
+                                                                0xFF94A3B8),
+                                                fontSize: 10.5,
+                                                fontWeight: FontWeight.w500,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      TextButton.icon(
+                                        style: TextButton.styleFrom(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 8, vertical: 4),
+                                          visualDensity: VisualDensity.compact,
+                                          foregroundColor:
+                                              const Color(0xFF38BDF8),
+                                        ),
+                                        icon: const Icon(
+                                            Icons.edit_calendar_rounded,
+                                            size: 14),
+                                        label: const Text('Extend Date',
+                                            style: TextStyle(fontSize: 11)),
+                                        onPressed: () =>
+                                            _openSubscriptionActivationDialog(
+                                          section: section,
+                                          mobile: mobile,
+                                          userName: name,
+                                          existingRenewalDate: renewalDate,
+                                          isAlreadyActive: !isLocked,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                                 const SizedBox(height: 10),
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.end,
                                   children: [
-                                    TextButton.icon(
-                                      onPressed: () => _toggleUserLock(
-                                        section: section,
-                                        mobile: mobile,
-                                        currentLockedState: isLocked,
+                                    OutlinedButton.icon(
+                                      style: OutlinedButton.styleFrom(
+                                        foregroundColor:
+                                            const Color(0xFF25D366),
+                                        side: const BorderSide(
+                                            color: Color(0xFF25D366),
+                                            width: 1.1),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 10, vertical: 6),
+                                        visualDensity: VisualDensity.compact,
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                        ),
                                       ),
+                                      icon: const Icon(
+                                          Icons.chat_bubble_outline_rounded,
+                                          size: 14),
+                                      label: const Text(
+                                        'WhatsApp Reminder',
+                                        style: TextStyle(
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.bold),
+                                      ),
+                                      onPressed: () =>
+                                          _sendWhatsAppRenewalReminder(
+                                        mobile: mobile,
+                                        userName: name,
+                                        section: section,
+                                        renewalDate: renewalDate,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    TextButton.icon(
+                                      onPressed: () {
+                                        if (isLocked) {
+                                          _openSubscriptionActivationDialog(
+                                            section: section,
+                                            mobile: mobile,
+                                            userName: name,
+                                            existingRenewalDate: renewalDate,
+                                            isAlreadyActive: false,
+                                          );
+                                        } else {
+                                          _toggleUserLock(
+                                            section: section,
+                                            mobile: mobile,
+                                            currentLockedState: isLocked,
+                                            userName: name,
+                                          );
+                                        }
+                                      },
                                       icon: Icon(
                                         isLocked
-                                            ? Icons.lock_open
-                                            : Icons.lock_outline,
+                                            ? Icons.lock_open_rounded
+                                            : Icons.lock_outline_rounded,
                                         size: 16,
                                         color: isLocked
                                             ? Colors.greenAccent
@@ -1340,17 +3599,18 @@ class _AdminUsersListScreenState extends State<AdminUsersListScreen> {
                                       ),
                                       label: Text(
                                         isLocked
-                                            ? 'Activate'
+                                            ? 'Turn ON (Activate)'
                                             : 'Block / Overdue',
                                         style: TextStyle(
                                           color: isLocked
                                               ? Colors.greenAccent
                                               : Colors.orangeAccent,
                                           fontSize: 12,
+                                          fontWeight: FontWeight.bold,
                                         ),
                                       ),
                                     ),
-                                    const SizedBox(width: 8),
+                                    const SizedBox(width: 4),
                                     IconButton(
                                       icon: const Icon(Icons.delete_outline,
                                           size: 18, color: Colors.redAccent),
@@ -1400,6 +3660,7 @@ class _BillGeneratorMaintenanceScreenState
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Row(
           children: [
@@ -1407,7 +3668,11 @@ class _BillGeneratorMaintenanceScreenState
             SizedBox(width: 10),
             Text(
               'Admin Bypass Access',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              style: TextStyle(
+                color: Colors.black87,
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
             ),
           ],
         ),
@@ -1424,10 +3689,13 @@ class _BillGeneratorMaintenanceScreenState
               controller: keyController,
               obscureText: true,
               keyboardType: TextInputType.number,
+              style: const TextStyle(color: Colors.black87),
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               decoration: const InputDecoration(
                 labelText: 'Master Security Key',
-                prefixIcon: Icon(Icons.shield_outlined),
+                labelStyle: TextStyle(color: Colors.black54),
+                prefixIcon:
+                    Icon(Icons.shield_outlined, color: Color(0xFFA855F7)),
                 border: OutlineInputBorder(),
                 isDense: true,
               ),
@@ -1541,6 +3809,7 @@ class _BillGeneratorMaintenanceScreenState
                   'SYSTEM UNDER MAINTENANCE',
                   textAlign: TextAlign.center,
                   style: TextStyle(
+                    color: Colors.black87,
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 0.5,
@@ -1671,13 +3940,13 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
     setState(() => _isLoading = true);
 
     try {
-      final cloudData =
+      final dynamic rawCloudData =
           await CloudSyncService.getAccountByIdentifier(identifier)
               .timeout(const Duration(seconds: 6), onTimeout: () => null);
 
       if (!mounted) return;
 
-      if (cloudData == null) {
+      if (rawCloudData == null || rawCloudData is! Map) {
         final accounts = AccountService.getAllAccounts();
         accounts.removeWhere(
           (a) =>
@@ -1698,6 +3967,9 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
         return;
       }
 
+      final Map<String, dynamic> cloudData =
+          Map<String, dynamic>.from(rawCloudData);
+
       final bool isLocked = cloudData['is_locked'] == true ||
           cloudData['is_blocked'] == true ||
           cloudData['account_status'] == 'locked' ||
@@ -1708,6 +3980,7 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
           context: context,
           barrierDismissible: false,
           builder: (ctx) => AlertDialog(
+            backgroundColor: Colors.white,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
             ),
@@ -1717,7 +3990,11 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
                 SizedBox(width: 10),
                 Text(
                   'Subscription Due',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  style: TextStyle(
+                    color: Colors.black87,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
                 ),
               ],
             ),
@@ -1727,7 +4004,11 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
               children: [
                 Text(
                   'Your portal subscription has expired or is currently overdue.',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                    color: Colors.black87,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 SizedBox(height: 10),
                 Text(
@@ -1766,12 +4047,14 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
         showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
+            backgroundColor: Colors.white,
             title: const Text(
               'Access Denied',
               style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
             ),
             content: Text(
               'This account is registered under "${liveUser.section}". Please log in through the ${liveUser.section} portal.',
+              style: const TextStyle(color: Colors.black87),
             ),
             actions: [
               ElevatedButton(
@@ -1796,13 +4079,18 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
 
       final emailToUse = liveUser.email.trim();
       if (emailToUse.isEmpty || !emailToUse.contains('@')) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-                'Invalid or missing email ($emailToUse) for this account.'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        // Direct login permitted for accounts created without an email (e.g. party created by broker)
+        if (mounted) {
+          setState(() => _isLoading = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('लॉगिन सफल! (सुझाव: 2-Step OTP सुरक्षा हेतु प्रोफाइल में ईमेल अवश्य जोड़ें)'),
+              backgroundColor: Color(0xFF0F766E),
+              duration: Duration(seconds: 4),
+            ),
+          );
+          _completeSuccessfulLogin(liveUser);
+        }
         return;
       }
 
@@ -1865,6 +4153,63 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
     }
   }
 
+  void _completeSuccessfulLogin(UserAccount account) {
+    StorageService.save(
+      'session_${widget.sectionName}',
+      account.mobile,
+    );
+    StorageService.save(
+      'session_${widget.sectionName}_name',
+      account.name,
+    );
+    StorageService.save(
+      'session_${widget.sectionName}_mobile',
+      account.mobile,
+    );
+    StorageService.save(
+      'session_${widget.sectionName}_email',
+      account.email,
+    );
+    StorageService.save(
+      'session_${widget.sectionName}_address',
+      account.address,
+    );
+
+    final allAccounts = AccountService.getAllAccounts();
+    final index = allAccounts.indexWhere(
+      (a) =>
+          a.mobile == account.mobile &&
+          a.section == widget.sectionName,
+    );
+    if (index >= 0) {
+      allAccounts[index] = account;
+    } else {
+      allAccounts.add(account);
+    }
+    AccountService.saveAccounts(allAccounts);
+
+    Widget targetPortal;
+    if (widget.sectionName == 'BROKER') {
+      targetPortal = const BrokerSectionPortal();
+    } else if (widget.sectionName == 'BUYER') {
+      targetPortal = BuyerSectionPortal(user: account);
+    } else if (widget.sectionName == 'SELLER') {
+      targetPortal = SellerSectionPortal(user: account);
+    } else {
+      final isUnlocked =
+          StorageService.get('session_BILL_GENERATOR_UNLOCKED') ==
+              'true';
+      targetPortal = isUnlocked
+          ? BillGeneratorSectionPortal(username: account.name)
+          : BillGeneratorMaintenanceScreen(username: account.name);
+    }
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => targetPortal),
+    );
+  }
+
   void _showLoginOtpDialog(UserAccount account, String expectedOtp) {
     final otpCtrl = TextEditingController();
 
@@ -1872,27 +4217,39 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
         title: const Row(
           children: [
             Icon(Icons.mark_email_read, color: Color(0xFF0F766E)),
             SizedBox(width: 8),
-            Text('Enter Email OTP'),
+            Text(
+              'Enter Email OTP',
+              style: TextStyle(color: Colors.black87),
+            ),
           ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Enter the 6-digit code sent to ${account.email}:'),
+            Text(
+              'Enter the 6-digit code sent to ${account.email}:',
+              style: const TextStyle(color: Colors.black87),
+            ),
             const SizedBox(height: 16),
             TextField(
               controller: otpCtrl,
               keyboardType: TextInputType.number,
               maxLength: 6,
+              style: const TextStyle(
+                color: Colors.black87,
+                fontWeight: FontWeight.bold,
+              ),
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               decoration: const InputDecoration(
                 labelText: '6-Digit OTP',
-                prefixIcon: Icon(Icons.pin),
+                labelStyle: TextStyle(color: Colors.black54),
+                prefixIcon: Icon(Icons.pin, color: Color(0xFF0F766E)),
                 border: OutlineInputBorder(),
                 counterText: '',
               ),
@@ -1924,61 +4281,7 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
               }
 
               Navigator.pop(ctx);
-
-              StorageService.save(
-                'session_${widget.sectionName}',
-                account.mobile,
-              );
-              StorageService.save(
-                'session_${widget.sectionName}_name',
-                account.name,
-              );
-              StorageService.save(
-                'session_${widget.sectionName}_mobile',
-                account.mobile,
-              );
-              StorageService.save(
-                'session_${widget.sectionName}_email',
-                account.email,
-              );
-              StorageService.save(
-                'session_${widget.sectionName}_address',
-                account.address,
-              );
-
-              final allAccounts = AccountService.getAllAccounts();
-              final index = allAccounts.indexWhere(
-                (a) =>
-                    a.mobile == account.mobile &&
-                    a.section == widget.sectionName,
-              );
-              if (index >= 0) {
-                allAccounts[index] = account;
-              } else {
-                allAccounts.add(account);
-              }
-              AccountService.saveAccounts(allAccounts);
-
-              Widget targetPortal;
-              if (widget.sectionName == 'BROKER') {
-                targetPortal = const BrokerSectionPortal();
-              } else if (widget.sectionName == 'BUYER') {
-                targetPortal = BuyerSectionPortal(user: account);
-              } else if (widget.sectionName == 'SELLER') {
-                targetPortal = SellerSectionPortal(user: account);
-              } else {
-                final isUnlocked =
-                    StorageService.get('session_BILL_GENERATOR_UNLOCKED') ==
-                        'true';
-                targetPortal = isUnlocked
-                    ? BillGeneratorSectionPortal(username: account.name)
-                    : BillGeneratorMaintenanceScreen(username: account.name);
-              }
-
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(builder: (context) => targetPortal),
-              );
+              _completeSuccessfulLogin(account);
             },
             child: const Text('VERIFY & ENTER'),
           ),
@@ -1989,159 +4292,221 @@ class _SectionLoginGateState extends State<SectionLoginGate> {
 
   @override
   Widget build(BuildContext context) {
+    final isBuyer = widget.sectionName.toUpperCase().contains('BUYER');
+    final isSeller = widget.sectionName.toUpperCase().contains('SELLER');
+    final brandColor = isBuyer
+        ? const Color(0xFF0284C7)
+        : isSeller
+            ? const Color(0xFFD97706)
+            : const Color(0xFF0F766E);
+
     return Scaffold(
-      backgroundColor: const Color(0xFF0B1320),
+      backgroundColor: const Color(0xFFF1F5F9),
       appBar: AppBar(
         title: Text('${widget.sectionName} PORTAL LOGIN'),
-        backgroundColor: const Color(0xFF16253B),
+        backgroundColor: brandColor,
         foregroundColor: Colors.white,
       ),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-          child: Container(
-            constraints: const BoxConstraints(maxWidth: 420),
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.all(Radius.circular(16)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black45,
-                  blurRadius: 18,
-                  offset: Offset(0, 6),
-                ),
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                CircleAvatar(
-                  radius: 32,
-                  backgroundColor:
-                      const Color(0xFF0F766E).withValues(alpha: 0.12),
-                  child: const Icon(
-                    Icons.shield_outlined,
-                    size: 36,
-                    color: Color(0xFF0F766E),
+      body: Theme(
+        data: ThemeData.light().copyWith(
+          colorScheme: ColorScheme.light(
+            primary: brandColor,
+            onSurface: const Color(0xFF0F172A),
+          ),
+        ),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 420),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: const BorderRadius.all(Radius.circular(16)),
+                border: Border.all(color: Colors.grey.shade200),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 16,
+                    offset: const Offset(0, 4),
                   ),
-                ),
-                const SizedBox(height: 14),
-                Text(
-                  '${widget.sectionName} SIGN IN',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 19,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                TextField(
-                  controller: _mobileController,
-                  keyboardType: TextInputType.phone,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.digitsOnly,
-                    LengthLimitingTextInputFormatter(10),
-                  ],
-                  decoration: const InputDecoration(
-                    labelText: '10-Digit Mobile Number',
-                    prefixIcon: Icon(Icons.phone_android),
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _pinController,
-                  obscureText: _obscurePin,
-                  keyboardType: TextInputType.visiblePassword,
-                  decoration: InputDecoration(
-                    labelText: 'Security PIN / Password',
-                    prefixIcon: const Icon(Icons.lock_outline),
-                    border: const OutlineInputBorder(),
-                    isDense: true,
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscurePin ? Icons.visibility_off : Icons.visibility,
-                      ),
-                      onPressed: () =>
-                          setState(() => _obscurePin = !_obscurePin),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  CircleAvatar(
+                    radius: 32,
+                    backgroundColor:
+                        const Color(0xFF0F766E).withValues(alpha: 0.12),
+                    child: const Icon(
+                      Icons.shield_outlined,
+                      size: 36,
+                      color: Color(0xFF0F766E),
                     ),
                   ),
-                ),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton.icon(
-                    onPressed: _requestPasswordResetViaWhatsApp,
-                    icon: const Icon(Icons.chat,
-                        size: 14, color: Color(0xFF25D366)),
+                  const SizedBox(height: 14),
+                  Text(
+                    '${widget.sectionName} SIGN IN',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Color(0xFF0F172A),
+                      fontSize: 19,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  TextField(
+                    controller: _mobileController,
+                    keyboardType: TextInputType.phone,
+                    style: const TextStyle(
+                      color: Colors.black87,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                      LengthLimitingTextInputFormatter(10),
+                    ],
+                    decoration: InputDecoration(
+                      labelText: '10-Digit Mobile Number',
+                      labelStyle: const TextStyle(color: Colors.black54),
+                      prefixIcon: const Icon(
+                        Icons.phone_android,
+                        color: Color(0xFF0F766E),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.grey.shade400),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(
+                          color: Color(0xFF0F766E),
+                          width: 2,
+                        ),
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _pinController,
+                    obscureText: _obscurePin,
+                    keyboardType: TextInputType.visiblePassword,
+                    style: const TextStyle(
+                      color: Colors.black87,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    decoration: InputDecoration(
+                      labelText: 'Security PIN / Password',
+                      labelStyle: const TextStyle(color: Colors.black54),
+                      prefixIcon: const Icon(
+                        Icons.lock_outline,
+                        color: Color(0xFF0F766E),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.grey.shade400),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(
+                          color: Color(0xFF0F766E),
+                          width: 2,
+                        ),
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      isDense: true,
+                      suffixIcon: IconButton(
+                        icon: Icon(
+                          _obscurePin ? Icons.visibility_off : Icons.visibility,
+                          color: Colors.black54,
+                        ),
+                        onPressed: () =>
+                            setState(() => _obscurePin = !_obscurePin),
+                      ),
+                    ),
+                  ),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      onPressed: _requestPasswordResetViaWhatsApp,
+                      icon: const Icon(Icons.chat,
+                          size: 14, color: Color(0xFF25D366)),
+                      label: const Text(
+                        'पासवर्ड भूल गए? (WhatsApp रीसेट)',
+                        style: TextStyle(
+                          color: Color(0xFF25D366),
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF0F766E),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 13),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                    onPressed: _isLoading ? null : _initiateLogin,
+                    icon: _isLoading
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : const Icon(Icons.login),
+                    label:
+                        Text(_isLoading ? 'LOGGING IN...' : 'LOGIN TO PORTAL'),
+                  ),
+                  const SizedBox(height: 16),
+                  const Divider(color: Colors.black12),
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      side: const BorderSide(color: Color(0xFF0F766E)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => CreateAccountScreen(
+                            sectionName: widget.sectionName,
+                          ),
+                        ),
+                      );
+                    },
+                    icon: const Icon(
+                      Icons.person_add_outlined,
+                      color: Color(0xFF0F766E),
+                    ),
                     label: const Text(
-                      'पासवर्ड भूल गए? (WhatsApp रीसेट)',
+                      'CREATE NEW ACCOUNT',
                       style: TextStyle(
-                        color: Color(0xFF25D366),
-                        fontSize: 12,
+                        color: Color(0xFF0F766E),
                         fontWeight: FontWeight.bold,
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 10),
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF0F766E),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 13),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                  onPressed: _isLoading ? null : _initiateLogin,
-                  icon: _isLoading
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2,
-                          ),
-                        )
-                      : const Icon(Icons.login),
-                  label: Text(_isLoading ? 'LOGGING IN...' : 'LOGIN TO PORTAL'),
-                ),
-                const SizedBox(height: 16),
-                const Divider(),
-                OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    side: const BorderSide(color: Color(0xFF0F766E)),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => CreateAccountScreen(
-                          sectionName: widget.sectionName,
-                        ),
-                      ),
-                    );
-                  },
-                  icon: const Icon(
-                    Icons.person_add_outlined,
-                    color: Color(0xFF0F766E),
-                  ),
-                  label: const Text(
-                    'CREATE NEW ACCOUNT',
-                    style: TextStyle(
-                      color: Color(0xFF0F766E),
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -2318,8 +4683,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       final bool mobileExists =
           await CloudSyncService.isMobileRegistered(mobile);
       if (mobileExists) {
-        setState(() => _isLoading = false);
         if (!mounted) return;
+        setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -2390,6 +4755,18 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       StorageService.save('session_${widget.sectionName}_mobile', mobile);
       StorageService.save('session_${widget.sectionName}_email', email);
       StorageService.save('session_${widget.sectionName}_address', address);
+
+      try {
+        TelegramNotificationService.notifyNewRegistration(
+          name: name,
+          mobile: mobile,
+          section: widget.sectionName,
+          email: email,
+          address: address,
+        );
+      } catch (tgErr) {
+        debugPrint('Telegram notification failed: $tgErr');
+      }
 
       if (!mounted) return;
 
@@ -2472,250 +4849,335 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isBuyer = widget.sectionName.toUpperCase().contains('BUYER');
+    final isSeller = widget.sectionName.toUpperCase().contains('SELLER');
+    final brandColor = isBuyer
+        ? const Color(0xFF0284C7)
+        : isSeller
+            ? const Color(0xFFD97706)
+            : const Color(0xFF0F766E);
+
     return Scaffold(
-      backgroundColor: const Color(0xFF0B1320),
+      backgroundColor: const Color(0xFFF1F5F9),
       appBar: AppBar(
         title: Text('REGISTER ${widget.sectionName}'),
-        backgroundColor: const Color(0xFF16253B),
+        backgroundColor: brandColor,
         foregroundColor: Colors.white,
       ),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-          child: Container(
-            constraints: const BoxConstraints(maxWidth: 420),
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.all(Radius.circular(16)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black45,
-                  blurRadius: 18,
-                  offset: Offset(0, 6),
-                ),
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    _buildStepIndicator(1, 'Email'),
-                    _buildStepDivider(_currentStep >= 2),
-                    _buildStepIndicator(2, 'Verify'),
-                    _buildStepDivider(_currentStep >= 3),
-                    _buildStepIndicator(3, 'Password'),
-                  ],
-                ),
-                const Divider(height: 28),
-                if (_currentStep == 1) ...[
-                  const Text(
-                    'Step 1: Verify Email Address',
-                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'We will send a 6-digit confirmation OTP to your Gmail.',
-                    style: TextStyle(fontSize: 12, color: Colors.black54),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _emailCtrl,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(
-                      labelText: 'Gmail Address',
-                      prefixIcon: Icon(Icons.email_outlined),
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                  ),
-                  const SizedBox(height: 18),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF0F766E),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 13),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                    onPressed: _isLoading ? null : _handleSendOtp,
-                    icon: _isLoading
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
-                            ),
-                          )
-                        : const Icon(Icons.send),
-                    label: Text(
-                      _isLoading ? 'SENDING OTP...' : 'SEND VERIFICATION OTP',
-                    ),
+      body: Theme(
+        data: ThemeData.light().copyWith(
+          colorScheme: ColorScheme.light(
+            primary: brandColor,
+            onSurface: const Color(0xFF0F172A),
+          ),
+        ),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 420),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: const BorderRadius.all(Radius.circular(16)),
+                border: Border.all(color: Colors.grey.shade200),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 16,
+                    offset: const Offset(0, 4),
                   ),
                 ],
-                if (_currentStep == 2) ...[
-                  const Text(
-                    'Step 2: Enter Verification Code',
-                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Enter the 6-digit OTP sent to ${_emailCtrl.text.trim()}',
-                    style: const TextStyle(fontSize: 12, color: Colors.black54),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _otpCtrl,
-                    keyboardType: TextInputType.number,
-                    maxLength: 6,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    decoration: const InputDecoration(
-                      labelText: '6-Digit OTP',
-                      prefixIcon: Icon(Icons.pin),
-                      border: OutlineInputBorder(),
-                      counterText: '',
-                      isDense: true,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton(
-                      onPressed: _isLoading ? null : _handleSendOtp,
-                      child: const Text(
-                        'Resend OTP',
-                        style: TextStyle(fontSize: 12),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF0F766E),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 13),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                    onPressed: _handleVerifyOtp,
-                    child: const Text('VERIFY OTP'),
-                  ),
-                ],
-                if (_currentStep == 3) ...[
-                  const Text(
-                    'Step 3: Setup Profile & Password',
-                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Email verified! Provide details and choose your password.',
-                    style: TextStyle(fontSize: 12, color: Colors.black54),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _nameCtrl,
-                    textCapitalization: TextCapitalization.characters,
-                    inputFormatters: [UpperCaseTextFormatter()],
-                    decoration: const InputDecoration(
-                      labelText: 'Full Name / Firm Name',
-                      prefixIcon: Icon(Icons.person_outline),
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _mobileCtrl,
-                    keyboardType: TextInputType.phone,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.digitsOnly,
-                      LengthLimitingTextInputFormatter(10),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _buildStepIndicator(1, 'Email'),
+                      _buildStepDivider(_currentStep >= 2),
+                      _buildStepIndicator(2, 'Verify'),
+                      _buildStepDivider(_currentStep >= 3),
+                      _buildStepIndicator(3, 'Password'),
                     ],
-                    decoration: const InputDecoration(
-                      labelText: '10-Digit Mobile Number (Login ID)',
-                      prefixIcon: Icon(Icons.phone_android),
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
                   ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _addressCtrl,
-                    textCapitalization: TextCapitalization.characters,
-                    inputFormatters: [UpperCaseTextFormatter()],
-                    decoration: const InputDecoration(
-                      labelText: 'Mandi / Office Address',
-                      prefixIcon: Icon(Icons.location_on_outlined),
-                      border: OutlineInputBorder(),
-                      isDense: true,
+                  const Divider(height: 28, color: Colors.black12),
+                  if (_currentStep == 1) ...[
+                    const Text(
+                      'Step 1: Verify Email Address',
+                      style: TextStyle(
+                        color: Colors.black87,
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _passwordCtrl,
-                    obscureText: _obscurePassword,
-                    decoration: InputDecoration(
-                      labelText: 'Create Password',
-                      prefixIcon: const Icon(Icons.lock_outline),
-                      border: const OutlineInputBorder(),
-                      isDense: true,
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _obscurePassword
-                              ? Icons.visibility_off
-                              : Icons.visibility,
+                    const SizedBox(height: 4),
+                    const Text(
+                      'We will send a 6-digit confirmation OTP to your Gmail.',
+                      style: TextStyle(fontSize: 12, color: Colors.black54),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _emailCtrl,
+                      keyboardType: TextInputType.emailAddress,
+                      style: const TextStyle(
+                        color: Colors.black87,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      decoration: const InputDecoration(
+                        labelText: 'Gmail Address',
+                        labelStyle: TextStyle(color: Colors.black54),
+                        prefixIcon: Icon(
+                          Icons.email_outlined,
+                          color: Color(0xFF0F766E),
                         ),
-                        onPressed: () => setState(
-                          () => _obscurePassword = !_obscurePassword,
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0F766E),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 13),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      onPressed: _isLoading ? null : _handleSendOtp,
+                      icon: _isLoading
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : const Icon(Icons.send),
+                      label: Text(
+                        _isLoading ? 'SENDING OTP...' : 'SEND VERIFICATION OTP',
+                      ),
+                    ),
+                  ],
+                  if (_currentStep == 2) ...[
+                    const Text(
+                      'Step 2: Enter Verification Code',
+                      style: TextStyle(
+                        color: Colors.black87,
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Enter the 6-digit OTP sent to ${_emailCtrl.text.trim()}',
+                      style:
+                          const TextStyle(fontSize: 12, color: Colors.black54),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _otpCtrl,
+                      keyboardType: TextInputType.number,
+                      maxLength: 6,
+                      style: const TextStyle(
+                        color: Colors.black87,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      decoration: const InputDecoration(
+                        labelText: '6-Digit OTP',
+                        labelStyle: TextStyle(color: Colors.black54),
+                        prefixIcon: Icon(Icons.pin, color: Color(0xFF0F766E)),
+                        border: OutlineInputBorder(),
+                        counterText: '',
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: _isLoading ? null : _handleSendOtp,
+                        child: const Text(
+                          'Resend OTP',
+                          style: TextStyle(fontSize: 12),
                         ),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _confirmPasswordCtrl,
-                    obscureText: _obscurePassword,
-                    decoration: const InputDecoration(
-                      labelText: 'Confirm Password',
-                      prefixIcon: Icon(Icons.lock_reset),
-                      border: OutlineInputBorder(),
-                      isDense: true,
+                    const SizedBox(height: 8),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0F766E),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 13),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      onPressed: _handleVerifyOtp,
+                      child: const Text('VERIFY OTP'),
                     ),
-                  ),
-                  const SizedBox(height: 18),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF0F766E),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 13),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
+                  ],
+                  if (_currentStep == 3) ...[
+                    const Text(
+                      'Step 3: Setup Profile & Password',
+                      style: TextStyle(
+                        color: Colors.black87,
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
-                    onPressed: _isLoading ? null : _handleCompleteRegistration,
-                    icon: _isLoading
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
-                            ),
-                          )
-                        : const Icon(Icons.check_circle_outline),
-                    label: Text(
-                      _isLoading
-                          ? 'CREATING ACCOUNT...'
-                          : 'REGISTER & COMPLETE',
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Email verified! Provide details and choose your password.',
+                      style: TextStyle(fontSize: 12, color: Colors.black54),
                     ),
-                  ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _nameCtrl,
+                      textCapitalization: TextCapitalization.characters,
+                      style: const TextStyle(
+                        color: Colors.black87,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      inputFormatters: [UpperCaseTextFormatter()],
+                      decoration: const InputDecoration(
+                        labelText: 'Full Name / Firm Name',
+                        labelStyle: TextStyle(color: Colors.black54),
+                        prefixIcon: Icon(
+                          Icons.person_outline,
+                          color: Color(0xFF0F766E),
+                        ),
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _mobileCtrl,
+                      keyboardType: TextInputType.phone,
+                      style: const TextStyle(
+                        color: Colors.black87,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(10),
+                      ],
+                      decoration: const InputDecoration(
+                        labelText: '10-Digit Mobile Number (Login ID)',
+                        labelStyle: TextStyle(color: Colors.black54),
+                        prefixIcon: Icon(
+                          Icons.phone_android,
+                          color: Color(0xFF0F766E),
+                        ),
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _addressCtrl,
+                      textCapitalization: TextCapitalization.characters,
+                      style: const TextStyle(
+                        color: Colors.black87,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      inputFormatters: [UpperCaseTextFormatter()],
+                      decoration: const InputDecoration(
+                        labelText: 'Mandi / Office Address',
+                        labelStyle: TextStyle(color: Colors.black54),
+                        prefixIcon: Icon(
+                          Icons.location_on_outlined,
+                          color: Color(0xFF0F766E),
+                        ),
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _passwordCtrl,
+                      obscureText: _obscurePassword,
+                      style: const TextStyle(
+                        color: Colors.black87,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      decoration: InputDecoration(
+                        labelText: 'Create Password',
+                        labelStyle: const TextStyle(color: Colors.black54),
+                        prefixIcon: const Icon(
+                          Icons.lock_outline,
+                          color: Color(0xFF0F766E),
+                        ),
+                        border: const OutlineInputBorder(),
+                        isDense: true,
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _obscurePassword
+                                ? Icons.visibility_off
+                                : Icons.visibility,
+                            color: Colors.black54,
+                          ),
+                          onPressed: () => setState(
+                            () => _obscurePassword = !_obscurePassword,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _confirmPasswordCtrl,
+                      obscureText: _obscurePassword,
+                      style: const TextStyle(
+                        color: Colors.black87,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      decoration: const InputDecoration(
+                        labelText: 'Confirm Password',
+                        labelStyle: TextStyle(color: Colors.black54),
+                        prefixIcon: Icon(
+                          Icons.lock_reset,
+                          color: Color(0xFF0F766E),
+                        ),
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0F766E),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 13),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      onPressed:
+                          _isLoading ? null : _handleCompleteRegistration,
+                      icon: _isLoading
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : const Icon(Icons.check_circle_outline),
+                      label: Text(
+                        _isLoading
+                            ? 'CREATING ACCOUNT...'
+                            : 'REGISTER & COMPLETE',
+                      ),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),

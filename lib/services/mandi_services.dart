@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -8,46 +9,55 @@ import 'package:url_launcher/url_launcher.dart';
 import '../models/mandi_models.dart';
 
 // =============================================================
-// 1. LOCAL PERSISTENT STORAGE SERVICE
+// 1. LOCAL STORAGE SERVICE WITH WEBKIT SAFE IN-MEMORY FALLBACK
 // =============================================================
 class StorageService {
   static SharedPreferences? _prefs;
+  static final Map<String, String> _memoryStore = {};
 
-  /// Initializes persistent storage on app startup.
   static Future<void> init() async {
-    _prefs ??= await SharedPreferences.getInstance();
+    try {
+      _prefs = await SharedPreferences.getInstance();
+    } catch (e) {
+      debugPrint('WebKit storage restriction encountered: $e');
+      _prefs = null;
+    }
   }
 
-  /// Saves a string key-value pair to persistent storage.
   static void save(String key, String value) {
-    if (_prefs == null) {
-      SharedPreferences.getInstance().then((p) {
-        _prefs = p;
-        p.setString(key, value);
-      });
-    } else {
-      _prefs?.setString(key, value);
-    }
+    _memoryStore[key] = value;
+    try {
+      if (_prefs != null) {
+        _prefs!.setString(key, value);
+      } else {
+        SharedPreferences.getInstance().then((p) {
+          _prefs = p;
+          p.setString(key, value);
+        }).catchError((_) {});
+      }
+    } catch (_) {}
   }
 
-  /// Reads a string value from persistent storage.
+  static void set(String key, String value) => save(key, value);
+
   static String? get(String key) {
-    return _prefs?.getString(key);
+    try {
+      if (_prefs != null && _prefs!.containsKey(key)) {
+        return _prefs!.getString(key);
+      }
+    } catch (_) {}
+    return _memoryStore[key];
   }
 
-  /// Removes a key from persistent storage.
   static void remove(String key) {
-    if (_prefs == null) {
-      SharedPreferences.getInstance().then((p) {
-        _prefs = p;
-        p.remove(key);
-      });
-    } else {
-      _prefs?.remove(key);
-    }
+    _memoryStore.remove(key);
+    try {
+      if (_prefs != null) {
+        _prefs!.remove(key);
+      }
+    } catch (_) {}
   }
 
-  /// Helper to get the currently active broker key (phone or UID).
   static String get currentBrokerKey {
     final sessionBrokerMobile = get('session_BROKER_mobile');
     if (sessionBrokerMobile != null && sessionBrokerMobile.trim().isNotEmpty) {
@@ -57,9 +67,23 @@ class StorageService {
     if (sessionBroker != null && sessionBroker.trim().isNotEmpty) {
       return sessionBroker.trim();
     }
-    return FirebaseAuth.instance.currentUser?.phoneNumber ??
-        FirebaseAuth.instance.currentUser?.uid ??
-        'default_broker';
+    final lastLoggedMobile = get('last_logged_in_mobile');
+    if (lastLoggedMobile != null && lastLoggedMobile.trim().isNotEmpty) {
+      return lastLoggedMobile.trim();
+    }
+    try {
+      final authPhone = FirebaseAuth.instance.currentUser?.phoneNumber;
+      if (authPhone != null && authPhone.trim().isNotEmpty) {
+        return authPhone.trim();
+      }
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid != null && uid.trim().isNotEmpty) {
+        return uid.trim();
+      }
+      return 'default_broker';
+    } catch (_) {
+      return 'default_broker';
+    }
   }
 }
 
@@ -361,113 +385,425 @@ class NotificationService {
 // =============================================================
 // 5. WHATSAPP TRANSACTION MESSAGING SERVICE
 // =============================================================
+class WhatsAppTemplateModel {
+  final int id;
+  final String title;
+  final String subtitle;
+  final String rawTemplate;
+
+  const WhatsAppTemplateModel({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.rawTemplate,
+  });
+}
+
 class WhatsAppService {
-  /// Generates the default deal confirmation template.
-  static String getDefaultTemplate() {
-    return '''
-🌾 *{appName} - (TRADE CONFIRMATION)* 🌾
------------------------------------
+  /// 4 Distinct WhatsApp Templates for Brokers
+  static const List<WhatsAppTemplateModel> templates = [
+    // Template 1: विस्तृत सौदा पत्र (Detailed Trade Contract)
+    WhatsAppTemplateModel(
+      id: 0,
+      title: '1. Detailed',
+      subtitle: 'नियम, सौदा कोड व संपूर्ण विवरण सहित',
+      rawTemplate: ''' *Trade Confirmation* 
+━━━━━━━━━━━━━━━━━━━━
+ 
+ *दिनांक:* {dateStr}
+
+ *खरीदार:* {buyerName}
+ *विक्रेता:* {sellerName}
+ *जिंस:* {jins}
+ *बोरी:* {bags} बोरी
+ *सौदा भाव:* ₹{rate} प्रति क्विंटल
+
+━━━━━━━━━━━━━━━━━━━━
+*सौदा कोड:*#{saudaId}
+🤝 *दलाल फर्म:* {brokerFirmName}
+📞 *संपर्क:* {brokerMobile}''',
+    ),
+
+    // Template 2: संक्षिप्त व्यावसायिक (Modern Business)
+    WhatsAppTemplateModel(
+      id: 1,
+      title: '2. English Modern',
+      subtitle: 'मोबाइल फ्रेंडली, संक्षिप्त बुलेट पॉइंट्स',
+      rawTemplate: ''' * Trade Confirmation*
+━━━━━━━━━━━━━━━━━━━━
+• *Date:* {dateStr}
+• *Item:* {jins}
+• *Quantity:* {bags} Bags
+• *Rate:* ₹{rate}/-
+• *Buyer:* {buyerName}
+• *Seller:* {sellerName}
+━━━━━━━━━━━━━━━━━━━━
+*Sauda Code:*#{saudaId}
+🤝 *Broker:* {brokerFirmName}
+📞 *Call/WA:* {brokerMobile}''',
+    ),
+
+    // Template 3: पारंपरिक मंडी चिट्ठी (Traditional Mandi Slip)
+    WhatsAppTemplateModel(
+      id: 2,
+      title: '3. Hindi Mandi',
+      subtitle: 'श्री गणेशाय नमः व पारंपरिक मंडी शैली',
+      rawTemplate: '''॥ श्री गणेशाय नमः ॥
+ *Trade Confirmation*
+━━━━━━━━━━━━━━━━━━━━
+दिनांक: *{dateStr}*
+
 *{partyName}* ({roleText}),
-आपका सौदा ब्रोकर द्वारा दर्ज कर लिया गया है:
+ *जिंस:* {jins}
+ *बोरी:* {bags}
+ *सौदा भाव:* ₹{rate} प्रति क्विंटल
+ *पार्टी:* {oppParty}
+━━━━━━━━━━━━━━━━━━━━
+👉 *सौदा कोड:* #{saudaId}
+*{brokerFirmName}*
+📞 *फोन:* {brokerMobile}''',
+    ),
 
-📅 *Date:* {dateStr}
-📦 *Jins:* {jins}
-⚖️ *Bags/Weight:* {bags}
-💰 *Rate:* ₹{rate}
-🏢 *To:* {oppParty}
------------------------------------
-📋 *ब्रोकर फर्म:* {brokerFirmName}
-📞 *संपर्क:* {brokerMobile}
+    // Template 4: त्वरित पुष्टि स्लिप (Quick SMS Slip)
+    WhatsAppTemplateModel(
+      id: 3,
+      title: '4. SMS Quick',
+      subtitle: 'अत्यंत संक्षिप्त, त्वरित पुष्टि हेतु',
+      rawTemplate: ''' *Trade Confirmation*
+━━━━━━━━━━━━━━━━━━━━
+ *{jins}* | *{bags} Bags* @ *₹{rate}*
+Buyer: {buyerName}
+Seller: {sellerName}
+Date: {dateStr}
+━━━━━━━━━━━━━━━━━━━━
+*Sauda Code:* #{saudaId}
+Broker: {brokerFirmName} ({brokerMobile})''',
+    ),
+  ];
 
-_कृपया अपने पोर्टल में लॉगिन कर सौदे की पुष्टि (Confirm) करें।_
-''';
-  }
+  /// Generates the default deal confirmation template.
+  static String getDefaultTemplate() => templates[0].rawTemplate;
 
-  /// Robust multi-tier URL dispatcher for WhatsApp & WhatsApp Business
-  static Future<bool> _launchWhatsAppUrl({
-    required String cleanMobile,
-    required String message,
-  }) async {
-    final encodedText = Uri.encodeComponent(message);
-
-    final nativeUri =
-        Uri.parse('whatsapp://send?phone=$cleanMobile&text=$encodedText');
-    final apiUri = Uri.parse(
-        'https://api.whatsapp.com/send?phone=$cleanMobile&text=$encodedText');
-    final waMeUri = Uri.parse('https://wa.me/$cleanMobile?text=$encodedText');
-
-    try {
-      if (await canLaunchUrl(nativeUri)) {
-        return await launchUrl(nativeUri, mode: LaunchMode.externalApplication);
-      }
-      if (await canLaunchUrl(apiUri)) {
-        return await launchUrl(apiUri, mode: LaunchMode.externalApplication);
-      }
-      if (await canLaunchUrl(waMeUri)) {
-        return await launchUrl(waMeUri, mode: LaunchMode.externalApplication);
-      }
-      return await launchUrl(nativeUri,
-          mode: LaunchMode.externalNonBrowserApplication);
-    } catch (e) {
-      debugPrint(
-          'WhatsApp primary dispatch failed ($e), attempting web fallback...');
-      try {
-        return await launchUrl(waMeUri, mode: LaunchMode.externalApplication);
-      } catch (err) {
-        debugPrint('WhatsApp final dispatch error: $err');
-        return false;
-      }
-    }
-  }
-
-  /// Dispatches the trade confirmation message via WhatsApp.
-  static Future<void> sendSaudaAlert({
-    required String recipientMobile,
-    required String role,
+  /// Formats a template string by populating real sauda and broker values.
+  static String formatSaudaMessage({
+    required String template,
     required MandiSaudaModel sauda,
+    required String role,
     required String brokerFirmName,
     required String brokerMobile,
-  }) async {
-    String cleanMobile = recipientMobile.replaceAll(RegExp(r'\D'), '');
-    if (cleanMobile.length == 10) cleanMobile = '91$cleanMobile';
-
-    if (cleanMobile.isEmpty) {
-      debugPrint('WhatsAppService: Invalid or empty recipient mobile number');
-      return;
-    }
-
+  }) {
     final partyName = role == 'BUYER' ? sauda.buyer : sauda.seller;
     final roleText = role == 'BUYER' ? 'खरीदार (Buyer)' : 'विक्रेता (Seller)';
     final dateStr =
         '${sauda.date.day.toString().padLeft(2, '0')}/${sauda.date.month.toString().padLeft(2, '0')}/${sauda.date.year}';
+    final buyerDalali = sauda.buyerDalaliPerBag > 0
+        ? '₹${sauda.buyerDalaliPerBag.toStringAsFixed(0)}/बोरी (क्रेता)'
+        : '';
+    final sellerDalali = sauda.sellerDalaliPerBag > 0
+        ? '₹${sauda.sellerDalaliPerBag.toStringAsFixed(0)}/बोरी (विक्रेता)'
+        : '';
+    final brokerageText =
+        [buyerDalali, sellerDalali].where((s) => s.isNotEmpty).join(' | ');
 
-    String template = getDefaultTemplate();
-    final rawProfile = StorageService.get('mandi_profile');
-    if (rawProfile != null && rawProfile.isNotEmpty) {
-      try {
-        final profile = BrokerFirmProfileModel.fromJson(jsonDecode(rawProfile));
-        if (profile.whatsappMessageTemplate.trim().isNotEmpty) {
-          template = profile.whatsappMessageTemplate;
-        }
-      } catch (_) {}
-    }
+    final code = sauda.id.trim().toUpperCase();
 
-    final message = template
+    return template
         .replaceAll('{appName}', kAppName)
         .replaceAll('{partyName}', partyName)
         .replaceAll('{roleText}', roleText)
         .replaceAll('{dateStr}', dateStr)
+        .replaceAll('{saudaId}', code)
+        .replaceAll('{saudaCode}', code)
+        .replaceAll('{code}', code)
         .replaceAll('{jins}', sauda.jins)
         .replaceAll('{bags}', sauda.bags.toString())
         .replaceAll('{rate}', sauda.rate.toStringAsFixed(0))
+        .replaceAll('{buyerName}', sauda.buyer)
+        .replaceAll('{sellerName}', sauda.seller)
         .replaceAll('{oppParty}', role == 'BUYER' ? sauda.seller : sauda.buyer)
+        .replaceAll(
+          '{brokerageText}',
+          brokerageText.isNotEmpty ? brokerageText : 'मंडी नियमानुसार',
+        )
         .replaceAll(
           '{brokerFirmName}',
           brokerFirmName.isNotEmpty ? brokerFirmName : 'MANDI BROKER',
         )
         .replaceAll('{brokerMobile}', brokerMobile);
+  }
+
+  /// Robust multi-tier URL dispatcher for WhatsApp & WhatsApp Business across Web and Mobile
+  static Future<bool> _launchWhatsAppUrl({
+    String cleanMobile = '',
+    required String message,
+  }) async {
+    final cleanDigits = cleanMobile.replaceAll(RegExp(r'\D'), '');
+    String targetPhone = cleanDigits;
+    if (targetPhone.length == 10) {
+      targetPhone = '91$targetPhone';
+    } else if (targetPhone.length == 11 && targetPhone.startsWith('0')) {
+      targetPhone = '91${targetPhone.substring(1)}';
+    }
+
+    final encodedText = Uri.encodeComponent(message);
+
+    final apiUri = targetPhone.isNotEmpty
+        ? Uri.parse(
+            'https://api.whatsapp.com/send?phone=$targetPhone&text=$encodedText')
+        : Uri.parse('https://api.whatsapp.com/send?text=$encodedText');
+
+    final waMeUri = targetPhone.isNotEmpty
+        ? Uri.parse('https://wa.me/$targetPhone?text=$encodedText')
+        : Uri.parse('https://wa.me/?text=$encodedText');
+
+    final nativeUri = targetPhone.isNotEmpty
+        ? Uri.parse('whatsapp://send?phone=$targetPhone&text=$encodedText')
+        : Uri.parse('whatsapp://send?text=$encodedText');
+
+    // Web handling: directly open api.whatsapp.com or wa.me in _blank
+    if (kIsWeb) {
+      try {
+        final opened = await launchUrl(
+          apiUri,
+          mode: LaunchMode.platformDefault,
+          webOnlyWindowName: '_blank',
+        );
+        if (opened) return true;
+      } catch (e) {
+        debugPrint('WhatsApp web launch 1 note: $e');
+      }
+
+      try {
+        return await launchUrl(
+          waMeUri,
+          mode: LaunchMode.platformDefault,
+          webOnlyWindowName: '_blank',
+        );
+      } catch (e) {
+        debugPrint('WhatsApp web launch 2 note: $e');
+        return false;
+      }
+    }
+
+    // Mobile (Android / iOS): Ladder of dispatch without brittle canLaunchUrl
+    try {
+      final ok =
+          await launchUrl(nativeUri, mode: LaunchMode.externalApplication);
+      if (ok) return true;
+    } catch (_) {}
+
+    try {
+      final ok = await launchUrl(apiUri, mode: LaunchMode.externalApplication);
+      if (ok) return true;
+    } catch (_) {}
+
+    try {
+      final ok = await launchUrl(waMeUri, mode: LaunchMode.externalApplication);
+      if (ok) return true;
+    } catch (_) {}
+
+    try {
+      return await launchUrl(apiUri, mode: LaunchMode.platformDefault);
+    } catch (e) {
+      debugPrint('WhatsApp final dispatch error: $e');
+      return false;
+    }
+  }
+
+  /// Launch a direct phone call using tel: URI scheme
+  static Future<void> launchPhoneCall(String phone) async {
+    final clean = phone.replaceAll(RegExp(r'[^\d+]'), '');
+    if (clean.isEmpty) return;
+    final uri = Uri.parse('tel:$clean');
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri);
+      }
+    } catch (e) {
+      debugPrint('Could not dial phone ($clean): $e');
+    }
+  }
+
+  /// Dispatches a formatted trade slip via WhatsApp for Buyer or Seller
+  static Future<void> sharePartySaudaSlip({
+    required MandiSaudaModel sauda,
+    required bool isBuyer,
+    String? recipientMobile,
+  }) async {
+    String cleanMobile = (recipientMobile ?? '').replaceAll(RegExp(r'\D'), '');
+    if (cleanMobile.length == 10) cleanMobile = '91$cleanMobile';
+
+    final dateStr =
+        '${sauda.date.day.toString().padLeft(2, '0')}/${sauda.date.month.toString().padLeft(2, '0')}/${sauda.date.year}';
+    final totalAmount = (sauda.bags * sauda.rate).toStringAsFixed(0);
+    final brokerageDue = isBuyer
+        ? sauda.totalBuyerDalali.toStringAsFixed(0)
+        : sauda.totalSellerDalali.toStringAsFixed(0);
+
+    final saudaCode = sauda.id.trim().toUpperCase();
+
+    final message = '''
+🌾 *$kAppName - TRADE SLIP* 🌾
+━━━━━━━━━━━━━━━━━━━━
+🔑 *सौदा कोड (Sauda Code):* #$saudaCode (1 माह तक मान्य)
+📅 *दिनांक:* $dateStr
+📦 *जिंस:* ${sauda.jins}
+⚖️ *बोरी / वजन:* ${sauda.bags} बोरी
+💰 *सौदा भाव:* ₹${sauda.rate.toStringAsFixed(0)} / क्विंटल
+💵 *कुल रकम:* ₹$totalAmount
+📌 *स्थिति:* ✅ फाइनल सौदा (Recorded)
+━━━━━━━━━━━━━━━━━━━━
+🏢 *खरीदार:* ${sauda.buyer}
+🚜 *विक्रेता:* ${sauda.seller}
+🤝 *ब्रोकर फर्म:* ${sauda.brokerFirmName.isNotEmpty ? sauda.brokerFirmName : 'MANDI BROKER'} (${sauda.brokerMobile})
+💼 *दलाली:* ₹$brokerageDue
+━━━━━━━━━━━━━━━━━━━━
+👉 *Mandi Portal पर 'सर्च कोड' में कोड #$saudaCode डालकर अपने खाते में सुरक्षित जोड़ें (वैधता: 1 माह)।*''';
 
     await _launchWhatsAppUrl(cleanMobile: cleanMobile, message: message);
+  }
+
+  /// Shares a complete ledger statement with a broker via WhatsApp
+  static Future<void> shareBrokerKhataStatement({
+    required String brokerFirmName,
+    required String brokerMobile,
+    required String partyName,
+    required String partyMobile,
+    required bool isBuyer,
+    required List<MandiSaudaModel> deals,
+    String? recipientMobile,
+  }) async {
+    String cleanMobile = (recipientMobile ?? '').replaceAll(RegExp(r'\D'), '');
+    if (cleanMobile.length == 10) cleanMobile = '91$cleanMobile';
+
+    final int totalBags = deals.fold<int>(0, (acc, d) => acc + d.bags);
+    final double totalValue =
+        deals.fold<double>(0.0, (acc, d) => acc + (d.bags * d.rate));
+    final double totalDalali = deals.fold<double>(0.0,
+        (acc, d) => acc + (isBuyer ? d.totalBuyerDalali : d.totalSellerDalali));
+
+    final roleTitle = isBuyer ? 'खरीदार (BUYER)' : 'विक्रेता (SELLER)';
+
+    final dealsSummary = deals.take(5).map((d) {
+      final dStr =
+          '${d.date.day.toString().padLeft(2, '0')}/${d.date.month.toString().padLeft(2, '0')}';
+      return '• $dStr: ${d.jins} - ${d.bags} बोरी @ ₹${d.rate.toStringAsFixed(0)} = ₹${(d.bags * d.rate).toStringAsFixed(0)}';
+    }).join('\n');
+
+    final message = '''
+📜 *$kAppName - खाता विवरण (KHATA STATEMENT)* 📜
+━━━━━━━━━━━━━━━━━━━━
+🏢 *ब्रोकर फर्म:* $brokerFirmName ($brokerMobile)
+👤 *पार्टी:* $partyName ($partyMobile) [$roleTitle]
+━━━━━━━━━━━━━━━━━━━━
+📊 *कुल सौदे:* ${deals.length}
+⚖️ *कुल बोरी:* $totalBags
+💰 *कुल व्यापार मूल्य:* ₹${totalValue.toStringAsFixed(0)}
+🤝 *कुल देय दलाली:* ₹${totalDalali.toStringAsFixed(0)}
+━━━━━━━━━━━━━━━━━━━━
+*हालिया सौदे:*
+$dealsSummary
+${deals.length > 5 ? '\n(+ ${deals.length - 5} अन्य सौदे)' : ''}
+━━━━━━━━━━━━━━━━━━━━
+_मंडी व्यापार डिजिटल पोर्टल_''';
+
+    await _launchWhatsAppUrl(cleanMobile: cleanMobile, message: message);
+  }
+
+  /// Dispatches the trade confirmation message via WhatsApp.
+  static Future<bool> sendSaudaAlert({
+    required String recipientMobile,
+    required String role,
+    required MandiSaudaModel sauda,
+    required String brokerFirmName,
+    required String brokerMobile,
+    int? templateIndex,
+    String? customTemplate,
+  }) async {
+    String cleanMobile = recipientMobile.replaceAll(RegExp(r'\D'), '');
+    if (cleanMobile.length == 10) cleanMobile = '91$cleanMobile';
+    if (cleanMobile.length == 11 && cleanMobile.startsWith('0')) {
+      cleanMobile = '91${cleanMobile.substring(1)}';
+    }
+
+    if (cleanMobile.isEmpty) {
+      debugPrint('WhatsAppService: Invalid or empty recipient mobile number');
+      return false;
+    }
+
+    String chosenTemplate = customTemplate ?? '';
+    if (chosenTemplate.isEmpty) {
+      if (templateIndex != null &&
+          templateIndex >= 0 &&
+          templateIndex < templates.length) {
+        chosenTemplate = templates[templateIndex].rawTemplate;
+      } else {
+        final savedCustom =
+            StorageService.get('broker_custom_whatsapp_template');
+        if (savedCustom != null && savedCustom.isNotEmpty) {
+          chosenTemplate = savedCustom;
+        } else {
+          final rawProfile = StorageService.get('mandi_profile');
+          if (rawProfile != null && rawProfile.isNotEmpty) {
+            try {
+              final profile =
+                  BrokerFirmProfileModel.fromJson(jsonDecode(rawProfile));
+              if (profile.whatsappMessageTemplate.trim().isNotEmpty) {
+                chosenTemplate = profile.whatsappMessageTemplate;
+              }
+            } catch (_) {}
+          }
+        }
+        if (chosenTemplate.isEmpty) {
+          final savedIdx = StorageService.get('broker_whatsapp_template_index');
+          final idx = int.tryParse(savedIdx?.toString() ?? '0') ?? 0;
+          chosenTemplate = (idx >= 0 && idx < templates.length)
+              ? templates[idx].rawTemplate
+              : templates[0].rawTemplate;
+        }
+      }
+    }
+
+    final message = formatSaudaMessage(
+      template: chosenTemplate,
+      sauda: sauda,
+      role: role,
+      brokerFirmName: brokerFirmName,
+      brokerMobile: brokerMobile,
+    );
+
+    return await _launchWhatsAppUrl(cleanMobile: cleanMobile, message: message);
+  }
+
+  /// Sends a WhatsApp confirmation notice from Buyer or Seller back to Broker
+  static Future<bool> sendConfirmationAck({
+    required String brokerMobile,
+    required String partyName,
+    required String role,
+    required MandiSaudaModel sauda,
+  }) async {
+    String targetMobile = brokerMobile.replaceAll(RegExp(r'\D'), '');
+    if (targetMobile.length == 10) targetMobile = '91$targetMobile';
+
+    final dateStr =
+        '${sauda.date.day.toString().padLeft(2, '0')}/${sauda.date.month.toString().padLeft(2, '0')}/${sauda.date.year}';
+    final roleText = role == 'BUYER' ? 'खरीदार (Buyer)' : 'विक्रेता (Seller)';
+    final code = sauda.id.trim().toUpperCase();
+
+    final message = '''
+✅ *सौदा स्वीकृति पुष्टि (DEAL CONFIRMED)*
+━━━━━━━━━━━━━━━━━━━━
+🔑 *सौदा कोड:* #$code
+दिनांक: $dateStr
+जिंस: ${sauda.jins}
+बोरी: ${sauda.bags}
+भाव: ₹${sauda.rate.toStringAsFixed(0)}
+
+स्वीकृतिकर्ता: $partyName ($roleText)
+_यह सौदा मेरे खाते में सुरक्षित दर्ज हो चुका है।_''';
+
+    return await _launchWhatsAppUrl(
+        cleanMobile: targetMobile, message: message);
   }
 
   /// Dispatches a cancellation/deletion notice via WhatsApp.
@@ -488,17 +824,19 @@ _कृपया अपने पोर्टल में लॉगिन क�
 
     final dateStr =
         '${sauda.date.day.toString().padLeft(2, '0')}/${sauda.date.month.toString().padLeft(2, '0')}/${sauda.date.year}';
+    final code = sauda.id.trim().toUpperCase();
     final message = '''
 ⚠️ *$kAppName - सौदा विलोपन सूचना (SAUDA DELETED)* ⚠️
------------------------------------
+━━━━━━━━━━━━━━━━━━━━
 *$recipientName*,
 ब्रोकर द्वारा निम्न सौदा बही से हटा (Delete) दिया गया है:
 
+🔑 *सौदा कोड:* #$code
 📅 *दिनांक:* $dateStr
 📦 *जिंस:* ${sauda.jins}
 ⚖️ *बोरी:* ${sauda.bags}
 💰 *भाव:* ₹${sauda.rate.toStringAsFixed(0)}
------------------------------------
+━━━━━━━━━━━━━━━━━━━━
 ब्रोकर फर्म: $brokerFirmName
 ''';
 
@@ -668,7 +1006,7 @@ void showNotificationDialog(BuildContext context, String userMobile) {
 // 7. APP UPDATE SERVICE (FIRESTORE VERSION CHECK)
 // =============================================================
 class AppUpdateService {
-  static const String currentVersion = '1.0.6';
+  static const String currentVersion = '1.0.14';
 
   static Future<void> checkForUpdates(BuildContext context) async {
     try {
@@ -725,6 +1063,30 @@ class AppUpdateService {
                           TextStyle(color: Colors.grey.shade800, fontSize: 13),
                     ),
                   ),
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.amber.shade200),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.info_outline,
+                            size: 16, color: Colors.amber.shade900),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'सुझाव: यदि Android में "App not installed" आए, तो पहले पुराना ऐप Uninstall कर लें, फिर नया APK इंस्टॉल करें। (डाटा क्लाउड में सुरक्षित है)',
+                            style: TextStyle(
+                                fontSize: 11, color: Colors.amber.shade900),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
               actions: [
@@ -760,20 +1122,26 @@ class AppUpdateService {
   }
 
   static bool _isUpdateAvailable(String current, String latest) {
-    final cleanCurrent = current.split('+').first.trim();
-    final cleanLatest = latest.split('+').first.trim();
+    try {
+      final cleanCurrent = current.split('+').first.trim();
+      final cleanLatest = latest.split('+').first.trim();
 
-    final List<int> currParts =
-        cleanCurrent.split('.').map((e) => int.tryParse(e) ?? 0).toList();
-    final List<int> latestParts =
-        cleanLatest.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+      final List<int> currParts = cleanCurrent
+          .split('.')
+          .map((e) => int.tryParse(e.replaceAll(RegExp(r'\D'), '')) ?? 0)
+          .toList();
+      final List<int> latestParts = cleanLatest
+          .split('.')
+          .map((e) => int.tryParse(e.replaceAll(RegExp(r'\D'), '')) ?? 0)
+          .toList();
 
-    for (int i = 0; i < 3; i++) {
-      final int curr = i < currParts.length ? currParts[i] : 0;
-      final int lat = i < latestParts.length ? latestParts[i] : 0;
-      if (lat > curr) return true;
-      if (lat < curr) return false;
-    }
+      for (int i = 0; i < 3; i++) {
+        final int curr = i < currParts.length ? currParts[i] : 0;
+        final int lat = i < latestParts.length ? latestParts[i] : 0;
+        if (lat > curr) return true;
+        if (lat < curr) return false;
+      }
+    } catch (_) {}
     return false;
   }
 }

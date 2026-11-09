@@ -2,32 +2,32 @@ name: NCDEX Live Scrape & Sync
 
 on:
   schedule:
-    # Runs Monday to Friday every 15 minutes between 9:30 AM IST and 5:30 PM IST (04:00 - 12:00 UTC)
-    - cron: '*/15 4-12 * * 1-5'
-  workflow_dispatch:
+    # Runs Monday to Friday every 30 minutes from 9:30 AM to 5:30 PM IST (04:00 to 12:00 UTC)
+    # Each run executes an internal continuous loop updating every 3 minutes non-stop!
+    - cron: '0,30 4-12 * * 1-5'
+  workflow_dispatch: # Allows manual trigger whenever needed
 
 jobs:
   scrape-and-sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Install Scraper Dependencies
+      - name: Install Dependencies
         working-directory: scripts/ncdex_updater
         run: |
-          rm -rf node_modules package-lock.json
           npm install puppeteer firebase-admin
 
-      - name: Execute Scraper
+      - name: Execute Continuous Scraper Loop
         working-directory: scripts/ncdex_updater
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: node fetch_ncdex.js
-        

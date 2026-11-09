@@ -1,10 +1,88 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
-import '../main.dart'; // Uses marketViewDb bound to mandi-market-view
+import '../services/cloud_sync_service.dart';
 import '../widgets/edit_promo_dialog.dart';
+import '../widgets/edit_live_users_dialog.dart';
+import '../widgets/github_workflow_dialog.dart';
 import '../widgets/live_users_counter.dart';
-import '../widgets/offline_banner_wrapper.dart';
+import '../widgets/market_analyzer_tab.dart';
 import '../widgets/promo_dialog.dart';
+
+// =============================================================
+// UNIVERSAL SAFE HELPERS FOR iOS SAFARI WEBKIT
+// =============================================================
+String formatMandiRate(dynamic value) {
+  if (value == null) return '0';
+  final num? n = value is num ? value : num.tryParse(value.toString().trim());
+  if (n != null) {
+    if (n % 1 == 0) {
+      return n.toInt().toString();
+    }
+    final s = n.toString();
+    if (s.endsWith('.0')) return s.substring(0, s.length - 2);
+    return s.replaceAll(RegExp(r'\.0+$'), '');
+  }
+  final str = value.toString().trim();
+  if (str.endsWith('.0')) return str.substring(0, str.length - 2);
+  return str.replaceAll(RegExp(r'\.0+$'), '');
+}
+
+DateTime? _safeParseDateTime(dynamic raw) {
+  if (raw == null) return null;
+  try {
+    if (raw is Timestamp) return raw.toDate().toLocal();
+    if (raw is DateTime) return raw.toLocal();
+    if (raw is int) return DateTime.fromMillisecondsSinceEpoch(raw).toLocal();
+    if (raw is String && raw.trim().isNotEmpty) {
+      return DateTime.tryParse(raw.trim())?.toLocal();
+    }
+    if (raw is Map && raw['seconds'] != null) {
+      final int sec = int.tryParse(raw['seconds'].toString()) ?? 0;
+      if (sec > 0) {
+        return DateTime.fromMillisecondsSinceEpoch(sec * 1000).toLocal();
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+Map<String, dynamic> _safeExtractDocMap(dynamic snapshotData) {
+  if (snapshotData == null) return <String, dynamic>{};
+  try {
+    dynamic rawMap;
+    if (snapshotData is DocumentSnapshot) {
+      rawMap = snapshotData.data();
+    } else if (snapshotData is Map) {
+      rawMap = snapshotData;
+    }
+    if (rawMap is Map) {
+      final Map<String, dynamic> result = <String, dynamic>{};
+      rawMap.forEach((key, value) {
+        if (key != null) {
+          result[key.toString()] = value;
+        }
+      });
+      return result;
+    }
+  } catch (_) {}
+  return <String, dynamic>{};
+}
+
+List<Map<String, dynamic>> _safeExtractList(dynamic rawList) {
+  if (rawList is! Iterable) return <Map<String, dynamic>>[];
+  final List<Map<String, dynamic>> cleanList = <Map<String, dynamic>>[];
+  for (final dynamic element in rawList) {
+    if (element is Map) {
+      final Map<String, dynamic> itemMap = <String, dynamic>{};
+      element.forEach((k, v) {
+        if (k != null) itemMap[k.toString()] = v;
+      });
+      cleanList.add(itemMap);
+    }
+  }
+  return cleanList;
+}
 
 class MarketWatchScreen extends StatefulWidget {
   const MarketWatchScreen({super.key});
@@ -14,19 +92,56 @@ class MarketWatchScreen extends StatefulWidget {
 }
 
 class _MarketWatchScreenState extends State<MarketWatchScreen> {
+  FirebaseFirestore? _db;
+  bool _isReady = false;
+
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        PromoDialog.showIfActive(context);
+    _prepareMarketDb();
+  }
+
+  Future<void> _prepareMarketDb() async {
+    try {
+      const FirebaseOptions marketOptions = FirebaseOptions(
+        apiKey: "AIzaSyAW5OMM6rgbWoHmoPIjQX_Up27QvbYNzbE",
+        authDomain: "mandi-market-view.firebaseapp.com",
+        projectId: "mandi-market-view",
+        storageBucket: "mandi-market-view.firebasestorage.app",
+        messagingSenderId: "535917182908",
+        appId: "1:535917182908:web:5e90a61f763c30d4eab5b9",
+      );
+
+      FirebaseApp app;
+      if (Firebase.apps.any((a) => a.name == 'marketViewApp')) {
+        app = Firebase.app('marketViewApp');
+      } else {
+        app = await Firebase.initializeApp(
+          name: 'marketViewApp',
+          options: marketOptions,
+        ).timeout(const Duration(seconds: 4));
       }
-    });
+      _db = FirebaseFirestore.instanceFor(app: app);
+    } catch (e) {
+      debugPrint('MarketWatch DB fallback: $e');
+      _db = FirebaseFirestore.instance;
+    }
+
+    if (mounted) {
+      setState(() => _isReady = true);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          try {
+            PromoDialog.showIfActive(context);
+          } catch (_) {}
+        }
+      });
+    }
   }
 
   void _promptAdminPin(BuildContext context) {
     final pinController = TextEditingController();
-    const String masterPin = "2000";
+    const String masterPin = "1895";
 
     showDialog(
       context: context,
@@ -79,6 +194,7 @@ class _MarketWatchScreenState extends State<MarketWatchScreen> {
   }
 
   void _showAdminSheet(BuildContext context) {
+    final activeDb = _db ?? FirebaseFirestore.instance;
     showModalBottomSheet(
       backgroundColor: const Color(0xFF1E1E1E),
       shape: const RoundedRectangleBorder(
@@ -104,7 +220,28 @@ class _MarketWatchScreenState extends State<MarketWatchScreen> {
                 Navigator.pop(sheetCtx);
                 showDialog(
                   context: context,
-                  builder: (context) => const EditLocalMandiRatesDialog(),
+                  builder: (context) => EditLocalMandiRatesDialog(db: activeDb),
+                );
+              },
+            ),
+            const Divider(color: Color(0xFF2B2B2B), height: 1),
+            ListTile(
+              leading: const Icon(Icons.auto_graph_rounded,
+                  color: Color(0xFF38BDF8)),
+              title: const Text(
+                'कमोडिटी भाव प्रिडिक्टर (Analyzer) अपडेट करें',
+                style:
+                    TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+              subtitle: const Text(
+                'Analyzer के भाव, टारगेट व सलाह बदलें',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(sheetCtx);
+                showDialog(
+                  context: context,
+                  builder: (context) => EditRatePredictionsDialog(db: activeDb),
                 );
               },
             ),
@@ -128,6 +265,47 @@ class _MarketWatchScreenState extends State<MarketWatchScreen> {
                 );
               },
             ),
+            const Divider(color: Color(0xFF2B2B2B), height: 1),
+            ListTile(
+              leading: const Icon(Icons.visibility_rounded, color: Color(0xFF38BDF8)),
+              title: const Text(
+                'लाइव व्यूअर्स संख्या (Live Count) सेट करें',
+                style:
+                    TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+              subtitle: const Text(
+                'Auto / Boost (+ संख्या) / Manual फिक्स काउंट सेट करें',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(sheetCtx);
+                showDialog(
+                  context: context,
+                  builder: (context) => EditLiveUsersCountDialog(db: activeDb),
+                );
+              },
+            ),
+            const Divider(color: Color(0xFF2B2B2B), height: 1),
+            ListTile(
+              leading: const Icon(Icons.play_circle_fill_rounded,
+                  color: Color(0xFF38BDF8)),
+              title: const Text(
+                'GitHub NCDEX Workflow चलाएं (Run Workflow)',
+                style:
+                    TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+              subtitle: const Text(
+                'गिटहब एक्शन स्क्रैपर रन करके लाइव भाव तुरंत सिंक करें',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(sheetCtx);
+                showDialog(
+                  context: context,
+                  builder: (context) => const GitHubWorkflowDialog(),
+                );
+              },
+            ),
           ],
         ),
       ),
@@ -136,75 +314,114 @@ class _MarketWatchScreenState extends State<MarketWatchScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return OfflineBannerWrapper(
-      child: DefaultTabController(
-        length: 3,
-        initialIndex: 1, // Default to NCDEX Agri tab
-        child: Scaffold(
-          backgroundColor: Colors.black,
-          appBar: AppBar(
+    final activeDb = _db ?? FirebaseFirestore.instance;
+
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: CloudSyncService.streamServiceSwitches(),
+      builder: (context, switchSnap) {
+        bool showAnalyzer = true;
+        if (switchSnap.hasData && switchSnap.data != null) {
+          final data = switchSnap.data!;
+          if (data.containsKey('show_analyzer')) {
+            final v = data['show_analyzer'];
+            showAnalyzer =
+                v is bool ? v : (v.toString().toLowerCase() == 'true');
+          }
+        }
+
+        final int tabCount = showAnalyzer ? 3 : 2;
+
+        return DefaultTabController(
+          key: ValueKey<int>(tabCount),
+          length: tabCount,
+          initialIndex: 0,
+          child: Scaffold(
             backgroundColor: Colors.black,
-            elevation: 0,
-            leading: IconButton(
-              icon: const Icon(Icons.arrow_back, color: Colors.white70),
-              onPressed: () => Navigator.pop(context),
-            ),
-            title: GestureDetector(
-              onLongPress: () => _promptAdminPin(context),
-              child: const Row(
-                children: [
-                  Text(
-                    'MarketWatch',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.3,
+            appBar: AppBar(
+              backgroundColor: Colors.black,
+              elevation: 0,
+              leading: IconButton(
+                icon: const Icon(Icons.arrow_back, color: Colors.white70),
+                onPressed: () => Navigator.pop(context),
+              ),
+              title: GestureDetector(
+                onLongPress: () => _promptAdminPin(context),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        'Live Bhav',
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
                     ),
-                  ),
-                  SizedBox(width: 8),
-                  Icon(Icons.show_chart, color: Colors.white70, size: 22),
+                    SizedBox(width: 6),
+                    Icon(Icons.show_chart, color: Colors.white70, size: 20),
+                  ],
+                ),
+              ),
+              actions: [
+                if (_isReady) LiveUsersCounter(db: activeDb),
+                const SizedBox(width: 6),
+                const Center(child: BlinkingLiveBadge()),
+                const SizedBox(width: 12),
+              ],
+              bottom: TabBar(
+                indicatorColor: const Color(0xFFFF5722),
+                indicatorWeight: 3.5,
+                labelColor: const Color(0xFFFF5722),
+                unselectedLabelColor: const Color(0xFF00E676),
+                labelStyle: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                  letterSpacing: 0.8,
+                ),
+                unselectedLabelStyle: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                  letterSpacing: 0.8,
+                ),
+                tabs: [
+                  const Tab(text: 'LOCAL'),
+                  const Tab(text: 'NCDEX'),
+                  if (showAnalyzer) const Tab(text: 'ANALYZER'),
                 ],
               ),
             ),
-            actions: const [
-              LiveUsersCounter(),
-              SizedBox(width: 4),
-              Center(child: BlinkingLiveBadge()),
-              SizedBox(width: 14),
-            ],
-            bottom: const TabBar(
-              indicatorColor: Color(0xFFFF5722),
-              indicatorWeight: 3.5,
-              labelColor: Color(0xFFFF5722),
-              unselectedLabelColor: Color(0xFF00E676),
-              labelStyle: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-                letterSpacing: 0.8,
-              ),
-              unselectedLabelStyle: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-                letterSpacing: 0.8,
-              ),
-              tabs: [
-                Tab(text: 'MCX'),
-                Tab(text: 'NCDEX'),
-                Tab(text: 'OTHERS'),
-              ],
-            ),
+            body: !_isReady
+                ? const Center(
+                    child: CircularProgressIndicator(color: Color(0xFFFF5722)),
+                  )
+                : TabBarView(
+                    children: [
+                      LocalMandiWatchList(db: activeDb),
+                      NcdexWatchList(db: activeDb),
+                      if (showAnalyzer) AnalyzerWatchList(db: activeDb),
+                    ],
+                  ),
           ),
-          body: const TabBarView(
-            children: [
-              McxWatchList(),
-              NcdexWatchList(),
-              LocalMandiWatchList(),
-            ],
-          ),
-        ),
-      ),
+        );
+      },
     );
+  }
+}
+
+// =============================================================
+// iOS-SAFE LIVE USERS COUNTER BADGE
+// =============================================================
+class SafeLiveUsersBadge extends StatelessWidget {
+  final FirebaseFirestore db;
+  const SafeLiveUsersBadge({super.key, required this.db});
+
+  @override
+  Widget build(BuildContext context) {
+    return LiveUsersCounter(db: db);
   }
 }
 
@@ -314,15 +531,13 @@ class _BlinkingLiveBadgeState extends State<BlinkingLiveBadge>
 // TAB 1: MCX WATCHLIST
 // =============================================================
 class McxWatchList extends StatelessWidget {
-  const McxWatchList({super.key});
+  final FirebaseFirestore db;
+  const McxWatchList({super.key, required this.db});
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: marketViewDb
-          .collection('market_watch')
-          .doc('mcx_summary')
-          .snapshots(),
+    return StreamBuilder<dynamic>(
+      stream: db.collection('market_watch').doc('mcx_summary').snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(
@@ -330,11 +545,18 @@ class McxWatchList extends StatelessWidget {
           );
         }
 
-        final docData = snapshot.data?.data();
-        final List<dynamic> rates =
-            (docData != null && docData['rates'] is List)
-                ? docData['rates'] as List<dynamic>
-                : <dynamic>[];
+        if (snapshot.hasError) {
+          return const Center(
+            child: Text(
+              'Connecting to MCX Feed...',
+              style: TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+          );
+        }
+
+        final Map<String, dynamic> docData = _safeExtractDocMap(snapshot.data);
+        final List<Map<String, dynamic>> rates =
+            _safeExtractList(docData['rates']);
 
         if (rates.isEmpty) {
           return const Center(
@@ -350,15 +572,18 @@ class McxWatchList extends StatelessWidget {
           separatorBuilder: (_, __) =>
               const Divider(color: Color(0xFF141414), height: 1, thickness: 1),
           itemBuilder: (context, index) {
-            final item = rates[index] as Map<String, dynamic>;
-            final String symbol = item['symbol']?.toString() ?? '';
-            final String expiry = item['expiry']?.toString() ?? 'NEAR';
+            final Map<String, dynamic> item = rates[index];
+            final String symbol = (item['symbol'] ?? '').toString();
+            final String expiry = (item['expiry'] ?? 'NEAR').toString();
 
             final double ltp = double.tryParse(
-                    (item['ltp'] ?? item['lastPrice'] ?? '0').toString()) ??
+                    (item['ltp'] ?? item['lastPrice'] ?? '0')
+                        .toString()
+                        .replaceAll(',', '')) ??
                 0.0;
-            final double change =
-                double.tryParse((item['change'] ?? '0').toString()) ?? 0.0;
+            final double change = double.tryParse(
+                    (item['change'] ?? '0').toString().replaceAll(',', '')) ??
+                0.0;
 
             final bool isPositive = change >= 0;
             final Color changeColor = change == 0
@@ -437,10 +662,11 @@ class McxWatchList extends StatelessWidget {
 }
 
 // =============================================================
-// TAB 2: NCDEX WATCHLIST (DATE BADGE + REFERENCE THEME)
+// TAB 2: NCDEX WATCHLIST
 // =============================================================
 class NcdexWatchList extends StatelessWidget {
-  const NcdexWatchList({super.key});
+  final FirebaseFirestore db;
+  const NcdexWatchList({super.key, required this.db});
 
   String _formatDate(DateTime dt) {
     const months = [
@@ -469,11 +695,8 @@ class NcdexWatchList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: marketViewDb
-          .collection('market_watch')
-          .doc('live_summary')
-          .snapshots(),
+    return StreamBuilder<dynamic>(
+      stream: db.collection('market_watch').doc('live_summary').snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(
@@ -481,19 +704,26 @@ class NcdexWatchList extends StatelessWidget {
           );
         }
 
-        final docData = snapshot.data?.data();
-        final Timestamp? timestamp =
-            (docData?['updatedAt'] ?? docData?['last_updated']) as Timestamp?;
-        final List<dynamic> rates = (docData != null &&
-                (docData['commodities'] is List || docData['rates'] is List))
-            ? (docData['commodities'] ?? docData['rates']) as List<dynamic>
-            : <dynamic>[];
+        if (snapshot.hasError) {
+          return const Center(
+            child: Text(
+              'Connecting to NCDEX Feed...',
+              style: TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+          );
+        }
 
-        final DateTime? updatedAt = timestamp?.toDate().toLocal();
+        final Map<String, dynamic> docData = _safeExtractDocMap(snapshot.data);
+        final DateTime? updatedAt = _safeParseDateTime(
+          docData['updatedAt'] ?? docData['last_updated'],
+        );
+
+        final List<Map<String, dynamic>> rates = _safeExtractList(
+          docData['commodities'] ?? docData['rates'],
+        );
 
         return Column(
           children: [
-            // Top Date/Time Feed Sync Bar
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: const BoxDecoration(
@@ -563,7 +793,7 @@ class NcdexWatchList extends StatelessWidget {
                         thickness: 1,
                       ),
                       itemBuilder: (context, index) {
-                        final item = rates[index] as Map<String, dynamic>;
+                        final Map<String, dynamic> item = rates[index];
 
                         final String displayName = (item['symbol'] ??
                                 item['name'] ??
@@ -571,7 +801,6 @@ class NcdexWatchList extends StatelessWidget {
                                 '')
                             .toString();
 
-                        // Prioritize real expiry date over fallback NEAR
                         final String expiryDate =
                             (item['expiry'] ?? item['contract'] ?? 'NEAR')
                                 .toString()
@@ -595,8 +824,8 @@ class NcdexWatchList extends StatelessWidget {
                         final bool isPositive =
                             !rawChange.startsWith('-') && numChange >= 0;
                         final Color changeColor = isPositive
-                            ? const Color(0xFF22C55E) // Bright Green
-                            : const Color(0xFFEF4444); // Bright Red
+                            ? const Color(0xFF22C55E)
+                            : const Color(0xFFEF4444);
 
                         final String changeText = isPositive
                             ? '(+${numChange.toStringAsFixed(0)})'
@@ -610,7 +839,6 @@ class NcdexWatchList extends StatelessWidget {
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             crossAxisAlignment: CrossAxisAlignment.center,
                             children: [
-                              // Left: Commodity Symbol in Blue + Expiry Date Badge
                               Row(
                                 crossAxisAlignment: CrossAxisAlignment.center,
                                 children: [
@@ -643,8 +871,6 @@ class NcdexWatchList extends StatelessWidget {
                                   ),
                                 ],
                               ),
-
-                              // Right: Large White Price + (Change) in Green/Red below it
                               Column(
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 mainAxisSize: MainAxisSize.min,
@@ -684,10 +910,11 @@ class NcdexWatchList extends StatelessWidget {
 }
 
 // =============================================================
-// TAB 3: OTHERS / LOCAL MANDI (WITH DATE & UPDATE TIME BAR)
+// TAB 1: LOCAL MANDI
 // =============================================================
 class LocalMandiWatchList extends StatelessWidget {
-  const LocalMandiWatchList({super.key});
+  final FirebaseFirestore db;
+  const LocalMandiWatchList({super.key, required this.db});
 
   String _formatDate(DateTime dt) {
     const months = [
@@ -716,11 +943,9 @@ class LocalMandiWatchList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: marketViewDb
-          .collection('market_watch')
-          .doc('local_mandi_summary')
-          .snapshots(),
+    return StreamBuilder<dynamic>(
+      stream:
+          db.collection('market_watch').doc('local_mandi_summary').snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(
@@ -728,14 +953,83 @@ class LocalMandiWatchList extends StatelessWidget {
           );
         }
 
-        final docData = snapshot.data?.data();
-        final Timestamp? timestamp = docData?['updatedAt'] as Timestamp?;
-        final List<dynamic> rates =
-            (docData != null && docData['rates'] is List)
-                ? docData['rates'] as List<dynamic>
-                : <dynamic>[];
+        if (snapshot.hasError) {
+          return const Center(
+            child: Text(
+              'Connecting to Local Mandi Feed...',
+              style: TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+          );
+        }
 
-        final DateTime? updatedAtDate = timestamp?.toDate().toLocal();
+        final Map<String, dynamic> docData = _safeExtractDocMap(snapshot.data);
+        final DateTime? updatedAtDate =
+            _safeParseDateTime(docData['updatedAt']);
+        final List<Map<String, dynamic>> rawRates =
+            _safeExtractList(docData['rates']);
+        final List<Map<String, dynamic>> rates = List.from(rawRates);
+
+        // Ensure Guar Seed and Guar Gum are present in Local Mandi
+        final existingNames =
+            rates.map((e) => (e['name'] ?? '').toString()).toSet();
+        final hasGuarSeed = existingNames.any((n) =>
+            n.contains('ग्वार सीड') || n.toLowerCase().contains('guar seed'));
+        if (!hasGuarSeed) {
+          rates.add({
+            'name': 'ग्वार सीड',
+            'unit': 'क्विंटल',
+            'min': 5200,
+            'max': 5450,
+          });
+        }
+        final hasGuarGum = existingNames.any((n) =>
+            n.contains('ग्वार गम') || n.toLowerCase().contains('guar gum'));
+        if (!hasGuarGum) {
+          rates.add({
+            'name': 'ग्वार गम',
+            'unit': 'क्विंटल',
+            'min': 9800,
+            'max': 10400,
+          });
+        }
+
+        // Canonical order placing Guar Seed at #4 and Guar Gum at #5
+        const canonicalOrder = [
+          'मूंग',
+          'तिल',
+          'मोठ',
+          'ग्वार सीड',
+          'ग्वार गम',
+          'चना',
+          'जीरा मंडी जोधपुर',
+          'रायड़ा',
+          'ईसबगोल',
+          'बाजरा',
+          'तारामीरा',
+          'सौंफ',
+          'कपास',
+        ];
+
+        int getCommodityPriority(String name) {
+          for (int i = 0; i < canonicalOrder.length; i++) {
+            final c = canonicalOrder[i];
+            if (c == name ||
+                (name.contains('ग्वार सीड') && c == 'ग्वार सीड') ||
+                (name.contains('ग्वार गम') && c == 'ग्वार गम') ||
+                (name.toLowerCase().contains('guar seed') && c == 'ग्वार सीड') ||
+                (name.toLowerCase().contains('guar gum') && c == 'ग्वार गम') ||
+                (name.contains(c) || c.contains(name))) {
+              return i;
+            }
+          }
+          return canonicalOrder.length;
+        }
+
+        rates.sort((a, b) {
+          final nameA = (a['name'] ?? '').toString();
+          final nameB = (b['name'] ?? '').toString();
+          return getCommodityPriority(nameA).compareTo(getCommodityPriority(nameB));
+        });
 
         return Column(
           children: [
@@ -817,14 +1111,14 @@ class LocalMandiWatchList extends StatelessWidget {
                       separatorBuilder: (_, __) =>
                           const Divider(color: Color(0xFF141414), height: 1),
                       itemBuilder: (context, index) {
-                        final item = rates[index] as Map<String, dynamic>;
-                        final String name = item['name']?.toString() ?? '';
+                        final Map<String, dynamic> item = rates[index];
+                        String name = (item['name'] ?? '').toString();
+                        if (name.contains('ग्वार सीड')) name = 'ग्वार सीड';
+                        if (name.contains('ग्वार गम')) name = 'ग्वार गम';
                         final String unit =
-                            item['unit']?.toString() ?? 'क्विंटल';
-                        final num minRate =
-                            (item['min'] is num) ? item['min'] as num : 0;
-                        final num maxRate =
-                            (item['max'] is num) ? item['max'] as num : 0;
+                            (item['unit'] ?? 'क्विंटल').toString();
+                        final String minRate = formatMandiRate(item['min']);
+                        final String maxRate = formatMandiRate(item['max']);
 
                         return Container(
                           color: Colors.black,
@@ -892,7 +1186,8 @@ class LocalMandiWatchList extends StatelessWidget {
 // ADMIN DIALOG: LOCAL MANDI RATES
 // =============================================================
 class EditLocalMandiRatesDialog extends StatefulWidget {
-  const EditLocalMandiRatesDialog({super.key});
+  final FirebaseFirestore db;
+  const EditLocalMandiRatesDialog({super.key, required this.db});
 
   @override
   State<EditLocalMandiRatesDialog> createState() =>
@@ -904,6 +1199,8 @@ class _EditLocalMandiRatesDialogState extends State<EditLocalMandiRatesDialog> {
     'मूंग',
     'तिल',
     'मोठ',
+    'ग्वार सीड',
+    'ग्वार गम',
     'चना',
     'जीरा मंडी जोधपुर',
     'रायड़ा',
@@ -939,18 +1236,26 @@ class _EditLocalMandiRatesDialogState extends State<EditLocalMandiRatesDialog> {
 
   Future<void> _loadExistingRates() async {
     try {
-      final doc = await marketViewDb
+      final doc = await widget.db
           .collection('market_watch')
           .doc('local_mandi_summary')
           .get();
       if (!mounted) return;
-      if (doc.exists && doc.data() != null) {
-        final List rates = doc.data()!['rates'] ?? [];
-        for (var r in rates) {
-          final name = r['name'];
-          if (minControllers.containsKey(name)) {
-            minControllers[name]!.text = r['min']?.toString() ?? '';
-            maxControllers[name]!.text = r['max']?.toString() ?? '';
+      final map = _safeExtractDocMap(doc);
+      final rates = _safeExtractList(map['rates']);
+      for (var r in rates) {
+        final name = (r['name'] ?? '').toString().trim();
+        for (var c in commodities) {
+          if (c == name ||
+              (name.contains('ग्वार सीड') && c == 'ग्वार सीड') ||
+              (name.contains('ग्वार गम') && c == 'ग्वार गम') ||
+              (name.toLowerCase().contains('guar seed') && c == 'ग्वार सीड') ||
+              (name.toLowerCase().contains('guar gum') && c == 'ग्वार गम')) {
+            minControllers[c]?.text = formatMandiRate(r['min']);
+            maxControllers[c]?.text = formatMandiRate(r['max']);
+          } else if (minControllers.containsKey(name)) {
+            minControllers[name]!.text = formatMandiRate(r['min']);
+            maxControllers[name]!.text = formatMandiRate(r['max']);
           }
         }
       }
@@ -962,16 +1267,18 @@ class _EditLocalMandiRatesDialogState extends State<EditLocalMandiRatesDialog> {
     final List<Map<String, dynamic>> rateList = [];
 
     for (var name in commodities) {
+      final minVal = double.tryParse(minControllers[name]!.text.trim()) ?? 0;
+      final maxVal = double.tryParse(maxControllers[name]!.text.trim()) ?? 0;
       rateList.add({
         'name': name,
         'unit': 'क्विंटल',
-        'min': double.tryParse(minControllers[name]!.text.trim()) ?? 0,
-        'max': double.tryParse(maxControllers[name]!.text.trim()) ?? 0,
+        'min': minVal % 1 == 0 ? minVal.toInt() : minVal,
+        'max': maxVal % 1 == 0 ? maxVal.toInt() : maxVal,
       });
     }
 
     try {
-      await marketViewDb
+      await widget.db
           .collection('market_watch')
           .doc('local_mandi_summary')
           .set({

@@ -33,6 +33,22 @@ class LocalMandiTab extends StatelessWidget {
     return '$hour:$minute $period';
   }
 
+  String _formatRate(dynamic value) {
+    if (value == null) return '0';
+    final num? n = value is num ? value : num.tryParse(value.toString().trim());
+    if (n != null) {
+      if (n % 1 == 0) {
+        return n.toInt().toString();
+      }
+      final s = n.toString();
+      if (s.endsWith('.0')) return s.substring(0, s.length - 2);
+      return s.replaceAll(RegExp(r'\.0+$'), '');
+    }
+    final str = value.toString().trim();
+    if (str.endsWith('.0')) return str.substring(0, str.length - 2);
+    return str.replaceAll(RegExp(r'\.0+$'), '');
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
@@ -172,10 +188,8 @@ class LocalMandiTab extends StatelessWidget {
                         final String name = item['name']?.toString() ?? '';
                         final String unit =
                             item['unit']?.toString() ?? 'क्विंटल';
-                        final num minRate =
-                            (item['min'] is num) ? item['min'] as num : 0;
-                        final num maxRate =
-                            (item['max'] is num) ? item['max'] as num : 0;
+                        final String minRateStr = _formatRate(item['min']);
+                        final String maxRateStr = _formatRate(item['max']);
 
                         return Container(
                           color: Colors.black,
@@ -211,7 +225,7 @@ class LocalMandiTab extends StatelessWidget {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Text(
-                                    '₹$minRate - ₹$maxRate',
+                                    '₹$minRateStr - ₹$maxRateStr',
                                     style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 16,

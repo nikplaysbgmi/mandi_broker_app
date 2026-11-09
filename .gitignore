@@ -53,3 +53,11 @@ scripts/ncdex_updater/node_modules/
 node_modules/
 node_modules/
 scripts/ncdex_updater/node_modules/
+
+node_modules/
+scripts/ncdex_updater/node_modules/
+
+repomix-output.xml
+ 
+.dart_cache/
+scratch/

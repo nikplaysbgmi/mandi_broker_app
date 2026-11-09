@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../services/email_service.dart';
+import 'mandi_downloads_screen.dart';
+import 'mandi_manual_screen.dart';
 
 // =============================================================
 // MODULE: CONTACT US & SERVICES HUB (WHATSAPP RESET ENABLED)
@@ -268,56 +270,55 @@ class ContactServicesScreen extends StatelessWidget {
             ),
             const SizedBox(height: 14),
             Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF0B1320),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white12),
-              ),
-              child: const Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'मंडी प्रो प्लान (Mandi Pro)',
-                        style: TextStyle(
-                          color: Color(0xFF10B981),
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                        ),
-                      ),
-                      Chip(
-                        label: Text(
-                          'ACTIVE',
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0B1320),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'मंडी प्रो प्लान (Mandi Pro)',
                           style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
+                            color: Color(0xFF10B981),
                             fontWeight: FontWeight.bold,
+                            fontSize: 15,
                           ),
                         ),
-                        backgroundColor: Color(0xFF0F766E),
-                        padding: EdgeInsets.zero,
-                      ),
-                    ],
-                  ),
-                  SizedBox(height: 6),
-                  Text(
-                    '• लाइव NCDEX एवं MCX रियल-टाइम कोट्स',
-                    style: TextStyle(color: Colors.white70, fontSize: 12.5),
-                  ),
-                  Text(
-                    '• असीमित बिल जनरेटर, पर्चा व तुलाई शीट',
-                    style: TextStyle(color: Colors.white70, fontSize: 12.5),
-                  ),
-                  Text(
-                    '• Brevo ईमेल इनवॉइस एवं सुरक्षित क्लाउड बैकअप',
-                    style: TextStyle(color: Colors.white70, fontSize: 12.5),
-                  ),
-                ],
-              ),
-            ),
+                        Chip(
+                          label: Text(
+                            'ACTIVE',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          backgroundColor: Color(0xFF0F766E),
+                          padding: EdgeInsets.zero,
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: 6),
+                    Text(
+                      '• लाइव NCDEX एवं MCX रियल-टाइम कोट्स',
+                      style: TextStyle(color: Colors.white70, fontSize: 12.5),
+                    ),
+                    Text(
+                      '• असीमित बिल जनरेटर, पर्चा व तुलाई शीट',
+                      style: TextStyle(color: Colors.white70, fontSize: 12.5),
+                    ),
+                    Text(
+                      '•  ईमेल इनवॉइस एवं सुरक्षित क्लाउड बैकअप',
+                      style: TextStyle(color: Colors.white70, fontSize: 12.5),
+                    ),
+                  ],
+                )),
             const SizedBox(height: 16),
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
@@ -406,7 +407,7 @@ class ContactServicesScreen extends StatelessWidget {
               context: context,
               icon: Icons.campaign_rounded,
               iconColor: Colors.deepOrange,
-              title: 'प्रमोशन / विज्ञापन अनुरोध (Promotion Request)',
+              title: 'प्रमोशन / विज्ञापन (Promotion Request)',
               subtitle:
                   'मार्केट टर्मिनल में अपनी दुकान या फर्म का पोस्टर लगवाएं',
               onTap: () => _openPromotionDialog(context),
@@ -418,12 +419,12 @@ class ContactServicesScreen extends StatelessWidget {
               context: context,
               icon: Icons.lock_reset_rounded,
               iconColor: const Color(0xFF25D366),
-              title: 'पासवर्ड / PIN रीसेट अनुरोध (WhatsApp Reset)',
+              title: 'पासवर्ड रीसेट (WhatsApp Reset)',
               subtitle:
                   'पासवर्ड भूल गए हैं या बदलना है? WhatsApp पर एडमिन से रीसेट करवाएं',
               onTap: () => _openWhatsApp(
                 context,
-                'नमस्ते Mandi Support Team, मुझे अपने खाते का पासवर्ड / PIN रीसेट करवाना है। कृपया सहायता करें।',
+                'नमस्ते Mandi Support Team, मुझे अपने खाते का पासवर्ड रीसेट करवाना है। कृपया सहायता करें।',
               ),
             ),
             const SizedBox(height: 10),
@@ -436,6 +437,37 @@ class ContactServicesScreen extends StatelessWidget {
               title: 'सब्सक्रिप्शन एवं प्लान (Subscription Status)',
               subtitle: 'सक्रिय प्लान की जांच करें व WhatsApp पर रिन्यू करवाएं',
               onTap: () => _openSubscriptionDialog(context),
+            ),
+            const SizedBox(height: 10),
+
+            // Service 4: User Manual & App Guide
+            _buildServiceTile(
+              context: context,
+              icon: Icons.menu_book_rounded,
+              iconColor: const Color(0xFF38BDF8),
+              title: 'यूज़र मैन्युअल (User Manual)',
+              subtitle: 'ऐप के सभी 6 सेक्शन का उपयोग, टिप्स व गाइड',
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (context) => const MandiManualScreen()),
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            // Service 5: Downloads Center
+            _buildServiceTile(
+              context: context,
+              icon: Icons.download_for_offline_rounded,
+              iconColor: const Color(0xFF10B981),
+              title: 'डाउनलोड केंद्र (App APK & Mandi Forms)',
+              subtitle:
+                  'लेटेस्ट APK, PWA ऐप व रेडीमेड मंडी फॉर्म्स PDF डाउनलोड करें',
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (context) => const MandiDownloadsScreen()),
+              ),
             ),
             const SizedBox(height: 16),
 

@@ -324,6 +324,76 @@ class MandiSaudaModel {
   bool cancelRequested;
   String? cancelRequestedBy;
   String? cancellationReason;
+  final String? _financialYear;
+
+  static String computeFinancialYear(DateTime dt) {
+    final startYear = dt.month >= 4 ? dt.year : dt.year - 1;
+    final endYearShort = (startYear + 1) % 100;
+    return 'FY $startYear-${endYearShort.toString().padLeft(2, '0')}';
+  }
+
+  String get financialYear =>
+      (_financialYear != null && _financialYear.isNotEmpty)
+          ? _financialYear
+          : computeFinancialYear(date);
+
+  /// Maximum validity of a Sauda Code is 1 month (30 days).
+  static const int saudaCodeValidityDays = 30;
+
+  /// Computes the expiry date for a sauda code (1 calendar month or 30 days, whichever is longer).
+  static DateTime computeSaudaCodeExpiryDate(DateTime base) {
+    final calendarMonth = DateTime(
+      base.year,
+      base.month + 1,
+      base.day,
+      base.hour,
+      base.minute,
+      base.second,
+    );
+    final thirtyDays = base.add(const Duration(days: saudaCodeValidityDays));
+    return calendarMonth.isAfter(thirtyDays) ? calendarMonth : thirtyDays;
+  }
+
+  /// Checks if a sauda code has expired (after 1 month).
+  static bool checkCodeExpired({
+    required dynamic saudaDateRaw,
+    dynamic createdAtRaw,
+    DateTime? currentTime,
+  }) {
+    final now = currentTime ?? DateTime.now();
+    final DateTime base = createdAtRaw != null
+        ? _parseFlexibleDateTime(createdAtRaw)
+        : _parseFlexibleDateTime(saudaDateRaw);
+    final expiry = computeSaudaCodeExpiryDate(base);
+    return now.isAfter(expiry);
+  }
+
+  /// Returns remaining days of validity for a sauda code.
+  static int daysRemainingForCode({
+    required dynamic saudaDateRaw,
+    dynamic createdAtRaw,
+    DateTime? currentTime,
+  }) {
+    final now = currentTime ?? DateTime.now();
+    final DateTime base = createdAtRaw != null
+        ? _parseFlexibleDateTime(createdAtRaw)
+        : _parseFlexibleDateTime(saudaDateRaw);
+    final expiry = computeSaudaCodeExpiryDate(base);
+    final diff = expiry.difference(now).inDays;
+    return diff < 0 ? 0 : diff;
+  }
+
+  /// Expiry date of this sauda's code.
+  DateTime get saudaCodeExpiryDate => computeSaudaCodeExpiryDate(date);
+
+  /// Whether this sauda's code is expired (after 1 month).
+  bool get isSaudaCodeExpired => DateTime.now().isAfter(saudaCodeExpiryDate);
+
+  /// Remaining days of code validity.
+  int get saudaCodeRemainingDays {
+    final diff = saudaCodeExpiryDate.difference(DateTime.now()).inDays;
+    return diff < 0 ? 0 : diff;
+  }
 
   MandiSaudaModel({
     required this.id,
@@ -337,14 +407,15 @@ class MandiSaudaModel {
     required this.rate,
     required this.buyerDalaliPerBag,
     required this.sellerDalaliPerBag,
-    this.buyerConfirmed = false,
-    this.sellerConfirmed = false,
+    this.buyerConfirmed = true,
+    this.sellerConfirmed = true,
     this.brokerFirmName = '',
     this.brokerMobile = '',
     this.cancelRequested = false,
     this.cancelRequestedBy,
     this.cancellationReason,
-  });
+    String? financialYear,
+  }) : _financialYear = financialYear;
 
   double get totalBuyerDalali => bags * buyerDalaliPerBag;
   double get totalSellerDalali => bags * sellerDalaliPerBag;
@@ -369,6 +440,7 @@ class MandiSaudaModel {
     bool? cancelRequested,
     String? cancelRequestedBy,
     String? cancellationReason,
+    String? financialYear,
   }) {
     return MandiSaudaModel(
       id: id ?? this.id,
@@ -389,12 +461,14 @@ class MandiSaudaModel {
       cancelRequested: cancelRequested ?? this.cancelRequested,
       cancelRequestedBy: cancelRequestedBy ?? this.cancelRequestedBy,
       cancellationReason: cancellationReason ?? this.cancellationReason,
+      financialYear: financialYear ?? this.financialYear,
     );
   }
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'date': date.toIso8601String(),
+        'financialYear': financialYear,
         'buyer': buyer.trim(),
         'buyerMobile': buyerMobile.trim(),
         'seller': seller.trim(),
@@ -426,10 +500,13 @@ class MandiSaudaModel {
       return double.tryParse(val.toString()) ?? 0.0;
     }
 
+    final parsedDate = _parseFlexibleDateTime(json['date']);
     return MandiSaudaModel(
       id: (json['id'] ?? DateTime.now().millisecondsSinceEpoch.toString())
           .toString(),
-      date: _parseFlexibleDateTime(json['date']),
+      date: parsedDate,
+      financialYear: json['financialYear']?.toString() ??
+          MandiSaudaModel.computeFinancialYear(parsedDate),
       buyer: (json['buyer'] ?? '').toString().trim(),
       buyerMobile: (json['buyerMobile'] ?? '').toString().trim(),
       seller: (json['seller'] ?? '').toString().trim(),
@@ -439,8 +516,8 @@ class MandiSaudaModel {
       rate: parseDouble(json['rate']),
       buyerDalaliPerBag: parseDouble(json['buyerDalaliPerBag']),
       sellerDalaliPerBag: parseDouble(json['sellerDalaliPerBag']),
-      buyerConfirmed: _parseBool(json['buyerConfirmed']),
-      sellerConfirmed: _parseBool(json['sellerConfirmed']),
+      buyerConfirmed: json.containsKey('buyerConfirmed') ? _parseBool(json['buyerConfirmed']) : true,
+      sellerConfirmed: json.containsKey('sellerConfirmed') ? _parseBool(json['sellerConfirmed']) : true,
       brokerFirmName: (json['brokerFirmName'] ?? '').toString().trim(),
       brokerMobile: (json['brokerMobile'] ?? '').toString().trim(),
       cancelRequested: _parseBool(json['cancelRequested']),

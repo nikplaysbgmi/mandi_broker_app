@@ -22,8 +22,12 @@
       }
     }
   },
-  
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
   "hosting": {
+    "site": "mandi-trade-portal",
     "public": "build/web",
     "ignore": [
       "firebase.json",
@@ -49,5 +53,3 @@
     ]
   }
 }
-
-

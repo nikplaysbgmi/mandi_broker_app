@@ -15,6 +15,9 @@ import '../services/mandi_services.dart';
 import 'bill_print_screen.dart';
 import 'main_dashboard_screen.dart';
 
+String cleanMobileNumber(String? mobile) =>
+    CloudSyncService.cleanMobileNumber(mobile);
+
 // =============================================================
 // 4. COMPLETE BROKER MODULE (ISOLATED BROKER DIRECTORY)
 // =============================================================
@@ -219,6 +222,28 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
       if (index != -1) _saudaRecords[index] = updated;
     });
     _persistSaudas();
+
+    final cleanBuyer = cleanMobileNumber(updated.buyerMobile);
+    if (cleanBuyer.isNotEmpty &&
+        !_parties.any((p) => cleanMobileNumber(p.mobile) == cleanBuyer)) {
+      _addParty(MandiPartyModel(
+        name: updated.buyer,
+        mobile: updated.buyerMobile,
+        address: 'NOT SPECIFIED',
+        type: 'Buyer',
+      ));
+    }
+    final cleanSeller = cleanMobileNumber(updated.sellerMobile);
+    if (cleanSeller.isNotEmpty &&
+        !_parties.any((p) => cleanMobileNumber(p.mobile) == cleanSeller)) {
+      _addParty(MandiPartyModel(
+        name: updated.seller,
+        mobile: updated.sellerMobile,
+        address: 'NOT SPECIFIED',
+        type: 'Seller',
+      ));
+    }
+
     CloudSyncService.updateSauda(
       updated.id,
       updated.toJson(),
@@ -227,29 +252,7 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
   }
 
   void _deleteSauda(String id) {
-    final saudaIndex = _saudaRecords.indexWhere((s) => s.id == id);
-    if (saudaIndex != -1) {
-      final s = _saudaRecords[saudaIndex];
-
-      CloudSyncService.sendNotification(
-        targetMobile: s.buyerMobile,
-        title: '⚠️ Sauda Deleted by Broker (${_brokerProfile.firmName})',
-        message:
-            'Deal for ${s.jins} (${s.bags} Bags) has been removed by broker.',
-        brokerKey: _activeBrokerKey,
-      );
-
-      CloudSyncService.sendNotification(
-        targetMobile: s.sellerMobile,
-        title: '⚠️ Sauda Deleted by Broker (${_brokerProfile.firmName})',
-        message:
-            'Deal for ${s.jins} (${s.bags} Bags) has been removed by broker.',
-        brokerKey: _activeBrokerKey,
-      );
-
-      CloudSyncService.deleteSauda(id, brokerKey: _activeBrokerKey);
-    }
-
+    CloudSyncService.deleteSauda(id, brokerKey: _activeBrokerKey);
     setState(() => _saudaRecords.removeWhere((s) => s.id == id));
     _persistSaudas();
   }
@@ -264,30 +267,45 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
   }
 
   void _editParty(String oldMobile, MandiPartyModel updatedParty) {
+    final cleanOld = cleanMobileNumber(oldMobile).isNotEmpty
+        ? cleanMobileNumber(oldMobile)
+        : oldMobile.trim();
+
     setState(() {
-      final partyIndex = _parties.indexWhere((p) => p.mobile == oldMobile);
-      if (partyIndex != -1) _parties[partyIndex] = updatedParty;
+      final partyIndex = _parties.indexWhere((p) =>
+          p.mobile == oldMobile ||
+          cleanMobileNumber(p.mobile) == cleanOld);
+      if (partyIndex != -1) {
+        _parties[partyIndex] = updatedParty;
+      }
 
       for (var s in _saudaRecords) {
-        if (s.buyerMobile == oldMobile) {
+        final bClean = cleanMobileNumber(s.buyerMobile);
+        if (s.buyerMobile == oldMobile || (bClean.isNotEmpty && bClean == cleanOld)) {
           s.buyerMobile = updatedParty.mobile;
           s.buyer = updatedParty.name;
         }
-        if (s.sellerMobile == oldMobile) {
+        final sClean = cleanMobileNumber(s.sellerMobile);
+        if (s.sellerMobile == oldMobile || (sClean.isNotEmpty && sClean == cleanOld)) {
           s.sellerMobile = updatedParty.mobile;
           s.seller = updatedParty.name;
         }
       }
     });
+
     _persistParties();
     _persistSaudas();
 
-    if (oldMobile != updatedParty.mobile) {
-      CloudSyncService.deleteBrokerParty(_activeBrokerKey, oldMobile);
+    BrokerPartyService.deleteParty(oldMobile, _activeBrokerKey);
+    if (cleanOld != oldMobile) {
+      BrokerPartyService.deleteParty(cleanOld, _activeBrokerKey);
     }
-    CloudSyncService.saveBrokerParty(
+    BrokerPartyService.saveParty(updatedParty.toJson(), _activeBrokerKey);
+
+    CloudSyncService.updateBrokerPartyAndMigrateAccount(
       brokerKey: _activeBrokerKey,
-      partyData: updatedParty.toJson(),
+      oldMobile: oldMobile,
+      updatedPartyData: updatedParty.toJson(),
     );
   }
 
@@ -359,23 +377,36 @@ class _BrokerSectionPortalState extends State<BrokerSectionPortal> {
           ),
         ];
 
-        return Scaffold(
-          body: screens[_currentIndex],
-          bottomNavigationBar: NavigationBar(
-            selectedIndex: _currentIndex,
-            onDestinationSelected: (index) =>
-                setState(() => _currentIndex = index),
-            destinations: const [
-              NavigationDestination(
-                icon: Icon(Icons.edit_note),
-                label: 'Sauda Entry',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.account_balance_wallet_outlined),
-                selectedIcon: Icon(Icons.account_balance_wallet),
-                label: 'Party Khata (खाता)',
-              ),
-            ],
+        return Theme(
+          data: ThemeData.light().copyWith(
+            scaffoldBackgroundColor: const Color(0xFFF1F5F9),
+            canvasColor: const Color(0xFFF1F5F9),
+            cardColor: Colors.white,
+            colorScheme: const ColorScheme.light(
+              primary: Color(0xFF0F766E),
+              surface: Colors.white,
+              onSurface: Color(0xFF0F172A),
+            ),
+          ),
+          child: Scaffold(
+            backgroundColor: const Color(0xFFF1F5F9),
+            body: screens[_currentIndex],
+            bottomNavigationBar: NavigationBar(
+              selectedIndex: _currentIndex,
+              onDestinationSelected: (index) =>
+                  setState(() => _currentIndex = index),
+              destinations: const [
+                NavigationDestination(
+                  icon: Icon(Icons.edit_note),
+                  label: 'Sauda Entry',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.account_balance_wallet_outlined),
+                  selectedIcon: Icon(Icons.account_balance_wallet),
+                  label: 'Party Khata (खाता)',
+                ),
+              ],
+            ),
           ),
         );
       },
@@ -430,6 +461,16 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
   final _rateController = TextEditingController();
   late TextEditingController _buyerDalaliRateController;
   late TextEditingController _sellerDalaliRateController;
+
+  static String generateSaudaCode() {
+    const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    final random = Random();
+    final l1 = letters[random.nextInt(letters.length)];
+    final l2 = letters[random.nextInt(letters.length)];
+    final l3 = letters[random.nextInt(letters.length)];
+    final num = 100 + random.nextInt(900); // 3 digits: 100 to 999
+    return '$l1$l2$l3$num';
+  }
 
   DateTime _selectedDate = DateTime.now();
 
@@ -608,103 +649,187 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
   }
 
   void _showWhatsAppDispatchDialog(MandiSaudaModel sauda) {
+    int selectedTemplateIdx = 0;
+    try {
+      final savedIdx = StorageService.get('broker_whatsapp_template_index');
+      selectedTemplateIdx = int.tryParse(savedIdx?.toString() ?? '0') ?? 0;
+      if (selectedTemplateIdx < 0 || selectedTemplateIdx >= WhatsAppService.templates.length) {
+        selectedTemplateIdx = 0;
+      }
+    } catch (_) {}
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        title: const Row(
-          children: [
-            Icon(Icons.check_circle_rounded, color: Colors.teal),
-            SizedBox(width: 8),
-            Text(
-              'Sauda Saved Successfully!',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-            ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Deal recorded for ${sauda.jins} (${sauda.bags} Bags @ ₹${sauda.rate.toStringAsFixed(0)}).',
-            ),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.green.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.green.shade200),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0F766E).withValues(alpha: 0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.check_circle_rounded, color: Color(0xFF0F766E), size: 22),
               ),
-              child: const Text(
-                'Send deal confirmation to Buyer and Seller on WhatsApp (uses custom template if set):',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.green,
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'सौदा सफलतापूर्वक दर्ज हुआ!',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF25D366),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                  vertical: 12,
-                  horizontal: 14,
-                ),
-              ),
-              onPressed: () {
-                WhatsAppService.sendSaudaAlert(
-                  recipientMobile: sauda.buyerMobile,
-                  role: 'BUYER',
-                  sauda: sauda,
-                  brokerFirmName: widget.brokerProfile.firmName,
-                  brokerMobile: widget.brokerProfile.mobile,
-                );
-              },
-              icon: const Icon(Icons.send_rounded, size: 18),
-              label: Text(
-                'Send to Buyer: ${sauda.buyer} (${sauda.buyerMobile})',
-                style: const TextStyle(fontSize: 12),
-              ),
-            ),
-            const SizedBox(height: 10),
-            ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF128C7E),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                  vertical: 12,
-                  horizontal: 14,
-                ),
-              ),
-              onPressed: () {
-                WhatsAppService.sendSaudaAlert(
-                  recipientMobile: sauda.sellerMobile,
-                  role: 'SELLER',
-                  sauda: sauda,
-                  brokerFirmName: widget.brokerProfile.firmName,
-                  brokerMobile: widget.brokerProfile.mobile,
-                );
-              },
-              icon: const Icon(Icons.send_rounded, size: 18),
-              label: Text(
-                'Send to Seller: ${sauda.seller} (${sauda.sellerMobile})',
-                style: const TextStyle(fontSize: 12),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('DONE (पूरा हुआ)'),
+            ],
           ),
-        ],
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Sauda Code Highlight Card
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0F766E).withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFF0F766E).withValues(alpha: 0.3)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Row(
+                            children: [
+                              Text(
+                                'सौदा कोड (SAUDA CODE):',
+                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF0F766E)),
+                              ),
+                              SizedBox(width: 6),
+                              Text(
+                                '(1 माह तक मान्य)',
+                                style: TextStyle(fontSize: 9.5, color: Colors.black54, fontWeight: FontWeight.w500),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            '#${sauda.id.toUpperCase()}',
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFF0F766E), letterSpacing: 1.2),
+                          ),
+                        ],
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.copy_rounded, size: 20, color: Color(0xFF0F766E)),
+                        tooltip: 'Copy Code',
+                        onPressed: () {
+                          Clipboard.setData(ClipboardData(text: sauda.id.toUpperCase()));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('सौदा कोड #${sauda.id.toUpperCase()} कॉपी हो गया!'),
+                              duration: const Duration(seconds: 2),
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '${sauda.jins} • ${sauda.bags} बोरी @ ₹${sauda.rate.toStringAsFixed(0)}',
+                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Colors.black87),
+                ),
+                const SizedBox(height: 10),
+
+                // Template Selector
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('स्लिप फॉर्मेट:', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.black54)),
+                    DropdownButton<int>(
+                      value: selectedTemplateIdx,
+                      isDense: true,
+                      style: const TextStyle(fontSize: 11.5, color: Color(0xFF0F766E), fontWeight: FontWeight.bold),
+                      items: WhatsAppService.templates.map((t) => DropdownMenuItem(
+                        value: t.id,
+                        child: Text(t.title),
+                      )).toList(),
+                      onChanged: (val) {
+                        if (val != null) {
+                          setDialogState(() => selectedTemplateIdx = val);
+                          StorageService.save('broker_whatsapp_template_index', val.toString());
+                        }
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                // Action button - Buyer
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF25D366),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: () {
+                    WhatsAppService.sendSaudaAlert(
+                      recipientMobile: sauda.buyerMobile,
+                      role: 'BUYER',
+                      sauda: sauda,
+                      brokerFirmName: widget.brokerProfile.firmName,
+                      brokerMobile: widget.brokerProfile.mobile,
+                      templateIndex: selectedTemplateIdx,
+                    );
+                  },
+                  icon: const Icon(Icons.send_rounded, size: 16),
+                  label: Text(
+                    'Buyer को WhatsApp भेजें: ${sauda.buyer} (${sauda.buyerMobile})',
+                    style: const TextStyle(fontSize: 11.5),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(height: 8),
+
+                // Action button - Seller
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF128C7E),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: () {
+                    WhatsAppService.sendSaudaAlert(
+                      recipientMobile: sauda.sellerMobile,
+                      role: 'SELLER',
+                      sauda: sauda,
+                      brokerFirmName: widget.brokerProfile.firmName,
+                      brokerMobile: widget.brokerProfile.mobile,
+                      templateIndex: selectedTemplateIdx,
+                    );
+                  },
+                  icon: const Icon(Icons.send_rounded, size: 16),
+                  label: Text(
+                    'Seller को WhatsApp भेजें: ${sauda.seller} (${sauda.sellerMobile})',
+                    style: const TextStyle(fontSize: 11.5),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('पूरा हुआ (DONE)'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -806,8 +931,10 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
       return;
     }
 
+    final customSaudaId = generateSaudaCode();
+
     final newSauda = MandiSaudaModel(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      id: customSaudaId,
       date: _selectedDate,
       buyer: buyerParty.name,
       buyerMobile: buyerParty.mobile,
@@ -820,8 +947,8 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
           double.tryParse(_buyerDalaliRateController.text) ?? 0.0,
       sellerDalaliPerBag:
           double.tryParse(_sellerDalaliRateController.text) ?? 0.0,
-      buyerConfirmed: false,
-      sellerConfirmed: false,
+      buyerConfirmed: true,
+      sellerConfirmed: true,
       brokerFirmName: widget.brokerProfile.firmName,
       brokerMobile: widget.brokerProfile.mobile,
     );
@@ -854,6 +981,14 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
       _liveSellerDalali = 0.0;
       _liveTotalDalali = 0.0;
     });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('✅ Sauda Booked! Sauda Code: $customSaudaId (Share with Buyer & Seller)'),
+        backgroundColor: const Color(0xFF0F766E),
+        duration: const Duration(seconds: 4),
+      ),
+    );
 
     _showWhatsAppDispatchDialog(newSauda);
   }
@@ -1001,6 +1136,7 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
     );
 
     return Scaffold(
+      backgroundColor: const Color(0xFFF1F5F9),
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
@@ -1025,6 +1161,31 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
         backgroundColor: const Color(0xFF0F766E),
         foregroundColor: Colors.white,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.print_outlined),
+            tooltip: 'प्रिंट बही (Print Sauda Register)',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => MandiBillPrintScreen(
+                    party: MandiPartyModel(
+                      name: widget.brokerProfile.firmName.isNotEmpty
+                          ? widget.brokerProfile.firmName
+                          : 'समस्त सौदे (All Trades)',
+                      mobile: widget.brokerProfile.mobile,
+                      address: widget.brokerProfile.address,
+                      type: 'Broker Register',
+                    ),
+                    isBuyer: true,
+                    deals: widget.saudaRecords,
+                    selectedPeriod: 'Broker Sauda Register',
+                    brokerProfile: widget.brokerProfile,
+                  ),
+                ),
+              );
+            },
+          ),
           IconButton(
             icon: Badge(
               isLabelVisible: brokerNotifications.isNotEmpty,
@@ -1327,11 +1488,18 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
                     vertical: 14,
                   ),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF0F766E).withValues(alpha: 0.08),
+                    color: Colors.white,
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(
-                      color: const Color(0xFF0F766E).withValues(alpha: 0.2),
+                      color: const Color(0xFF0F766E).withValues(alpha: 0.25),
                     ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.04),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
                   ),
                   child: Row(
                     children: [
@@ -1442,12 +1610,38 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      "Today's Sauda Ledger (${widget.saudaRecords.length})",
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    Row(
+                      children: [
+                        Text(
+                          "Today's Sauda Ledger (${widget.saudaRecords.length})",
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF0F172A),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(
+                            color:
+                                const Color(0xFF0F766E).withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                                color: const Color(0xFF0F766E)
+                                    .withValues(alpha: 0.3)),
+                          ),
+                          child: Text(
+                            MandiSaudaModel.computeFinancialYear(_selectedDate),
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF0F766E),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                     if (widget.saudaRecords.isNotEmpty)
                       Text(
@@ -1463,11 +1657,16 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
                 const SizedBox(height: 10),
                 if (widget.saudaRecords.isEmpty)
                   Container(
-                    padding: const EdgeInsets.all(24),
+                    padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 16),
                     alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey.shade200),
+                    ),
                     child: const Text(
                       'No transactions recorded yet.',
-                      style: TextStyle(color: Colors.grey),
+                      style: TextStyle(color: Colors.black54, fontSize: 14),
                     ),
                   )
                 else
@@ -1478,8 +1677,7 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
                     separatorBuilder: (_, __) => const SizedBox(height: 8),
                     itemBuilder: (context, index) {
                       final s = widget.saudaRecords[index];
-                      final allConfirmed =
-                          s.buyerConfirmed && s.sellerConfirmed;
+                      
 
                       return Card(
                         elevation: 1.5,
@@ -1500,12 +1698,40 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
                                       crossAxisAlignment:
                                           CrossAxisAlignment.start,
                                       children: [
-                                        Text(
-                                          'Buyer: ${s.buyer}  |  Seller: ${s.seller}',
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 15,
-                                          ),
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                'Buyer: ${s.buyer}  |  Seller: ${s.seller}',
+                                                style: const TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 15,
+                                                ),
+                                              ),
+                                            ),
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                  horizontal: 6, vertical: 2),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFF0F766E)
+                                                    .withValues(alpha: 0.08),
+                                                borderRadius:
+                                                    BorderRadius.circular(4),
+                                                border: Border.all(
+                                                  color: const Color(0xFF0F766E)
+                                                      .withValues(alpha: 0.25),
+                                                ),
+                                              ),
+                                              child: Text(
+                                                s.financialYear,
+                                                style: const TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Color(0xFF0F766E),
+                                                ),
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                         const SizedBox(height: 3),
                                         Text(
@@ -1546,42 +1772,13 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
                                                 _showWhatsAppDispatchDialog(s),
                                           ),
                                           IconButton(
-                                            icon: Icon(
+                                            icon: const Icon(
                                               Icons.edit,
                                               size: 18,
-                                              color: allConfirmed
-                                                  ? Colors.grey
-                                                  : const Color(0xFF0F766E),
+                                              color: Color(0xFF0F766E),
                                             ),
-                                            tooltip: allConfirmed
-                                                ? 'Confirmed sauda cannot be edited'
-                                                : 'Edit Sauda',
+                                            tooltip: 'Edit Sauda',
                                             onPressed: () {
-                                              if (allConfirmed) {
-                                                showDialog(
-                                                  context: context,
-                                                  builder: (ctx) => AlertDialog(
-                                                    title: const Text(
-                                                      'Edit Locked (सौदा लॉक है)',
-                                                      style: TextStyle(
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                      ),
-                                                    ),
-                                                    content: const Text(
-                                                      'This sauda has been confirmed by both parties. Confirmed saudas cannot be edited; they can only be deleted by the broker.',
-                                                    ),
-                                                    actions: [
-                                                      ElevatedButton(
-                                                        onPressed: () =>
-                                                            Navigator.pop(ctx),
-                                                        child: const Text('OK'),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                );
-                                                return;
-                                              }
                                               showEditSaudaDialog(
                                                 context,
                                                 s,
@@ -1652,112 +1849,23 @@ class _BrokerDealEntryTabState extends State<BrokerDealEntryTab> {
                                         vertical: 3,
                                       ),
                                       decoration: BoxDecoration(
-                                        color: s.buyerConfirmed
-                                            ? Colors.green.shade50
-                                            : Colors.amber.shade50,
+                                        color: const Color(0xFF0F766E)
+                                            .withValues(alpha: 0.1),
                                         borderRadius: BorderRadius.circular(4),
                                         border: Border.all(
-                                          color: s.buyerConfirmed
-                                              ? Colors.green.shade300
-                                              : Colors.amber.shade300,
+                                          color: const Color(0xFF0F766E)
+                                              .withValues(alpha: 0.3),
                                         ),
                                       ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(
-                                            s.buyerConfirmed
-                                                ? Icons.check_circle
-                                                : Icons.hourglass_top,
-                                            size: 12,
-                                            color: s.buyerConfirmed
-                                                ? Colors.green
-                                                : Colors.amber.shade800,
-                                          ),
-                                          const SizedBox(width: 4),
-                                          Text(
-                                            s.buyerConfirmed
-                                                ? 'Buyer: Confirmed ✓'
-                                                : 'Buyer: Pending ⏳',
-                                            style: TextStyle(
-                                              fontSize: 10.5,
-                                              fontWeight: FontWeight.bold,
-                                              color: s.buyerConfirmed
-                                                  ? Colors.green.shade900
-                                                  : Colors.amber.shade900,
-                                            ),
-                                          ),
-                                        ],
+                                      child: Text(
+                                        'CODE: #${s.id}',
+                                        style: const TextStyle(
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.bold,
+                                          color: Color(0xFF0F766E),
+                                        ),
                                       ),
                                     ),
-                                    const SizedBox(width: 8),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                        vertical: 3,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: s.sellerConfirmed
-                                            ? Colors.green.shade50
-                                            : Colors.amber.shade50,
-                                        borderRadius: BorderRadius.circular(4),
-                                        border: Border.all(
-                                          color: s.sellerConfirmed
-                                              ? Colors.green.shade300
-                                              : Colors.amber.shade300,
-                                        ),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(
-                                            s.sellerConfirmed
-                                                ? Icons.check_circle
-                                                : Icons.hourglass_top,
-                                            size: 12,
-                                            color: s.sellerConfirmed
-                                                ? Colors.green
-                                                : Colors.amber.shade800,
-                                          ),
-                                          const SizedBox(width: 4),
-                                          Text(
-                                            s.sellerConfirmed
-                                                ? 'Seller: Confirmed ✓'
-                                                : 'Seller: Pending ⏳',
-                                            style: TextStyle(
-                                              fontSize: 10.5,
-                                              fontWeight: FontWeight.bold,
-                                              color: s.sellerConfirmed
-                                                  ? Colors.green.shade900
-                                                  : Colors.amber.shade900,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    if (allConfirmed) ...[
-                                      const Spacer(),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 8,
-                                          vertical: 3,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Colors.teal.shade700,
-                                          borderRadius: BorderRadius.circular(
-                                            4,
-                                          ),
-                                        ),
-                                        child: const Text(
-                                          'ALL CONFIRMED ✓ (LOCKED)',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
                                   ],
                                 ),
                               ],
@@ -1813,7 +1921,7 @@ class _BrokerKhataDirectoryTabState extends State<BrokerKhataDirectoryTab>
   late TabController _tabController;
 
   int _selectedMonth = 0;
-  int _selectedYear = DateTime.now().year;
+  String _selectedFY = MandiSaudaModel.computeFinancialYear(DateTime.now());
 
   final List<String> _months = [
     'All Months',
@@ -1843,16 +1951,20 @@ class _BrokerKhataDirectoryTabState extends State<BrokerKhataDirectoryTab>
     super.dispose();
   }
 
-  List<int> get _activeYears {
-    final years = widget.saudaRecords.map((d) => d.date.year).toSet().toList();
-    if (years.isEmpty) return [DateTime.now().year];
-    years.sort((a, b) => b.compareTo(a));
-    return years;
+  List<String> get _activeFinancialYears {
+    final currentFY = MandiSaudaModel.computeFinancialYear(DateTime.now());
+    final set = <String>{currentFY};
+    for (final d in widget.saudaRecords) {
+      set.add(d.financialYear);
+    }
+    final list = set.toList();
+    list.sort((a, b) => b.compareTo(a));
+    return list;
   }
 
-  List<int> _getActiveMonths(int year) {
+  List<int> _getActiveMonths(String fy) {
     final months = widget.saudaRecords
-        .where((d) => d.date.year == year)
+        .where((d) => d.financialYear == fy)
         .map((d) => d.date.month)
         .toSet()
         .toList();
@@ -1861,11 +1973,11 @@ class _BrokerKhataDirectoryTabState extends State<BrokerKhataDirectoryTab>
     return months;
   }
 
-  List<MandiSaudaModel> _getFilteredDeals(int year, int month) {
+  List<MandiSaudaModel> _getFilteredDeals(String fy, int month) {
     return widget.saudaRecords.where((deal) {
-      final matchesYear = deal.date.year == year;
+      final matchesFY = fy == 'ALL' || deal.financialYear == fy;
       final matchesMonth = month == 0 || deal.date.month == month;
-      return matchesYear && matchesMonth;
+      return matchesFY && matchesMonth;
     }).toList();
   }
 
@@ -1976,7 +2088,10 @@ class _BrokerKhataDirectoryTabState extends State<BrokerKhataDirectoryTab>
                   );
                   return;
                 }
-                if (widget.parties.any((p) => p.mobile == mobile)) {
+                final cleanNewPartyMob = cleanMobileNumber(mobile);
+                if (widget.parties.any((p) =>
+                    p.mobile == mobile ||
+                    cleanMobileNumber(p.mobile) == cleanNewPartyMob)) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('Mobile $mobile is already registered!'),
@@ -2013,7 +2128,11 @@ class _BrokerKhataDirectoryTabState extends State<BrokerKhataDirectoryTab>
     for (var p in widget.parties) {
       if ((isBuyer && (p.type == 'Buyer' || p.type == 'Both')) ||
           (!isBuyer && (p.type == 'Seller' || p.type == 'Both'))) {
-        map[p.mobile] = {
+        final cleanKey = cleanMobileNumber(p.mobile).isNotEmpty
+            ? cleanMobileNumber(p.mobile)
+            : p.mobile.trim();
+        if (cleanKey.isEmpty) continue;
+        map[cleanKey] = {
           'party': p,
           'bags': 0,
           'dalaliDue': 0.0,
@@ -2023,14 +2142,19 @@ class _BrokerKhataDirectoryTabState extends State<BrokerKhataDirectoryTab>
     }
 
     for (var d in deals) {
-      final mobile = isBuyer ? d.buyerMobile : d.sellerMobile;
+      final rawMobile = isBuyer ? d.buyerMobile : d.sellerMobile;
+      final cleanDealMob = cleanMobileNumber(rawMobile).isNotEmpty
+          ? cleanMobileNumber(rawMobile)
+          : rawMobile.trim();
       final name = isBuyer ? d.buyer : d.seller;
 
-      if (!map.containsKey(mobile)) {
-        map[mobile] = {
+      if (cleanDealMob.isEmpty) continue;
+
+      if (!map.containsKey(cleanDealMob)) {
+        map[cleanDealMob] = {
           'party': MandiPartyModel(
             name: name,
-            mobile: mobile,
+            mobile: cleanDealMob,
             address: 'NOT SPECIFIED',
             type: isBuyer ? 'Buyer' : 'Seller',
           ),
@@ -2039,10 +2163,10 @@ class _BrokerKhataDirectoryTabState extends State<BrokerKhataDirectoryTab>
           'dealsCount': 0,
         };
       }
-      map[mobile]!['bags'] += d.bags;
-      map[mobile]!['dalaliDue'] +=
+      map[cleanDealMob]!['bags'] += d.bags;
+      map[cleanDealMob]!['dalaliDue'] +=
           isBuyer ? d.totalBuyerDalali : d.totalSellerDalali;
-      map[mobile]!['dealsCount'] += 1;
+      map[cleanDealMob]!['dealsCount'] += 1;
     }
 
     return map;
@@ -2148,19 +2272,19 @@ class _BrokerKhataDirectoryTabState extends State<BrokerKhataDirectoryTab>
 
   @override
   Widget build(BuildContext context) {
-    final availableYears = _activeYears;
-    if (!availableYears.contains(_selectedYear)) {
-      _selectedYear = availableYears.first;
+    final availableYears = _activeFinancialYears;
+    if (!availableYears.contains(_selectedFY)) {
+      _selectedFY = availableYears.first;
     }
 
-    final activeMonths = _getActiveMonths(_selectedYear);
+    final activeMonths = _getActiveMonths(_selectedFY);
     final allowedMonthValues = [0, ...activeMonths];
 
     if (!allowedMonthValues.contains(_selectedMonth)) {
       _selectedMonth = 0;
     }
 
-    final filtered = _getFilteredDeals(_selectedYear, _selectedMonth);
+    final filtered = _getFilteredDeals(_selectedFY, _selectedMonth);
     final buyerData = _aggregatePartyData(filtered, true);
     final sellerData = _aggregatePartyData(filtered, false);
 
@@ -2174,6 +2298,7 @@ class _BrokerKhataDirectoryTabState extends State<BrokerKhataDirectoryTab>
     );
 
     return Scaffold(
+      backgroundColor: const Color(0xFFF1F5F9),
       appBar: AppBar(
         title: const Text(
           'Party Khata Directory',
@@ -2241,17 +2366,18 @@ class _BrokerKhataDirectoryTabState extends State<BrokerKhataDirectoryTab>
                   ),
                 ),
                 DropdownButtonHideUnderline(
-                  child: DropdownButton<int>(
-                    value: _selectedYear,
+                  child: DropdownButton<String>(
+                    value: _selectedFY,
                     isDense: true,
-                    items: availableYears.map((year) {
+                    items: availableYears.map((fy) {
                       return DropdownMenuItem(
-                        value: year,
+                        value: fy,
                         child: Text(
-                          '$year',
+                          fy,
                           style: const TextStyle(
                             fontWeight: FontWeight.bold,
                             fontSize: 14,
+                            color: Color(0xFF0F766E),
                           ),
                         ),
                       );
@@ -2259,7 +2385,7 @@ class _BrokerKhataDirectoryTabState extends State<BrokerKhataDirectoryTab>
                     onChanged: (val) {
                       if (val != null) {
                         setState(() {
-                          _selectedYear = val;
+                          _selectedFY = val;
                           _selectedMonth = 0;
                         });
                       }
@@ -2351,7 +2477,7 @@ class BrokerPartyDetailScreen extends StatefulWidget {
 class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
   late MandiPartyModel _currentParty;
   int _selectedMonth = 0;
-  int _selectedYear = DateTime.now().year;
+  String _selectedFY = MandiSaudaModel.computeFinancialYear(DateTime.now());
 
   final List<String> _months = [
     'All Months',
@@ -2376,23 +2502,33 @@ class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
   }
 
   List<MandiSaudaModel> get _partyAllDeals {
+    final cleanPartyMob = cleanMobileNumber(_currentParty.mobile).isNotEmpty
+        ? cleanMobileNumber(_currentParty.mobile)
+        : _currentParty.mobile.trim();
     return widget.allSauda.where((s) {
-      return widget.isBuyer
-          ? s.buyerMobile == _currentParty.mobile
-          : s.sellerMobile == _currentParty.mobile;
+      final rawMob = widget.isBuyer ? s.buyerMobile : s.sellerMobile;
+      final cleanMob = cleanMobileNumber(rawMob).isNotEmpty
+          ? cleanMobileNumber(rawMob)
+          : rawMob.trim();
+      return cleanMob.isNotEmpty &&
+          (cleanMob == cleanPartyMob || rawMob == _currentParty.mobile);
     }).toList();
   }
 
-  List<int> get _partyActiveYears {
-    final years = _partyAllDeals.map((d) => d.date.year).toSet().toList();
-    if (years.isEmpty) return [DateTime.now().year];
-    years.sort((a, b) => b.compareTo(a));
-    return years;
+  List<String> get _partyActiveFinancialYears {
+    final currentFY = MandiSaudaModel.computeFinancialYear(DateTime.now());
+    final set = <String>{currentFY};
+    for (final d in _partyAllDeals) {
+      set.add(d.financialYear);
+    }
+    final list = set.toList();
+    list.sort((a, b) => b.compareTo(a));
+    return list;
   }
 
-  List<int> _getPartyActiveMonths(int year) {
+  List<int> _getPartyActiveMonths(String fy) {
     final months = _partyAllDeals
-        .where((d) => d.date.year == year)
+        .where((d) => d.financialYear == fy)
         .map((d) => d.date.month)
         .toSet()
         .toList();
@@ -2403,10 +2539,10 @@ class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
 
   List<MandiSaudaModel> get _filteredDeals {
     return _partyAllDeals.where((deal) {
-      final matchesYear = deal.date.year == _selectedYear;
+      final matchesFY = _selectedFY == 'ALL' || deal.financialYear == _selectedFY;
       final matchesMonth =
           _selectedMonth == 0 || deal.date.month == _selectedMonth;
-      return matchesYear && matchesMonth;
+      return matchesFY && matchesMonth;
     }).toList();
   }
 
@@ -2518,8 +2654,11 @@ class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
                   return;
                 }
 
-                if (mobile != _currentParty.mobile &&
-                    widget.allParties.any((p) => p.mobile == mobile)) {
+                final cleanNewMob = cleanMobileNumber(mobile);
+                final cleanCurrMob = cleanMobileNumber(_currentParty.mobile);
+                if (cleanNewMob != cleanCurrMob &&
+                    widget.allParties.any((p) =>
+                        cleanMobileNumber(p.mobile) == cleanNewMob)) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(
@@ -2537,7 +2676,8 @@ class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
                   address: address,
                   type: selectedType,
                 );
-                widget.onPartyEdited(_currentParty.mobile, updated);
+                final oldMobile = _currentParty.mobile;
+                widget.onPartyEdited(oldMobile, updated);
 
                 setState(() => _currentParty = updated);
                 Navigator.pop(ctx);
@@ -2595,12 +2735,12 @@ class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final availableYears = _partyActiveYears;
-    if (!availableYears.contains(_selectedYear)) {
-      _selectedYear = availableYears.first;
+    final availableYears = _partyActiveFinancialYears;
+    if (!availableYears.contains(_selectedFY)) {
+      _selectedFY = availableYears.first;
     }
 
-    final activeMonths = _getPartyActiveMonths(_selectedYear);
+    final activeMonths = _getPartyActiveMonths(_selectedFY);
     final allowedMonthValues = [0, ...activeMonths];
     if (!allowedMonthValues.contains(_selectedMonth)) {
       _selectedMonth = 0;
@@ -2613,9 +2753,12 @@ class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
           acc + (widget.isBuyer ? d.totalBuyerDalali : d.totalSellerDalali),
     );
     int totalBags = deals.fold<int>(0, (acc, d) => acc + d.bags);
-    String currentPeriodText = '${_months[_selectedMonth]} $_selectedYear';
+    String currentPeriodText = _selectedMonth == 0
+        ? _selectedFY
+        : '${_months[_selectedMonth]} ($_selectedFY)';
 
     return Scaffold(
+      backgroundColor: const Color(0xFFF1F5F9),
       appBar: AppBar(
         title: Text(
           '${_currentParty.name} (${widget.isBuyer ? "Buyer" : "Seller"})',
@@ -2634,9 +2777,12 @@ class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
                   builder: (context) => MandiBillPrintScreen(
                     party: _currentParty,
                     isBuyer: widget.isBuyer,
-                    deals: deals,
+                    deals: _partyAllDeals,
                     selectedPeriod: currentPeriodText,
                     brokerProfile: widget.brokerProfile,
+                    initialDuration: _selectedMonth != 0
+                        ? '${_months[_selectedMonth]} ($_selectedFY)'
+                        : (_selectedFY != 'ALL' ? _selectedFY : 'ALL'),
                   ),
                 ),
               );
@@ -2668,6 +2814,52 @@ class _BrokerPartyDetailScreenState extends State<BrokerPartyDetailScreen> {
                     fontSize: 13,
                     color: Colors.black87,
                   ),
+                ),
+                const SizedBox(height: 10),
+                // FY & Month Selection Row
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F766E).withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: _selectedFY,
+                          isDense: true,
+                          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Color(0xFF0F766E)),
+                          items: availableYears.map((fy) => DropdownMenuItem(value: fy, child: Text(fy))).toList(),
+                          onChanged: (val) {
+                            if (val != null) setState(() => _selectedFY = val);
+                          },
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<int>(
+                          value: _selectedMonth,
+                          isDense: true,
+                          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+                          items: [
+                            const DropdownMenuItem(value: 0, child: Text('All Months')),
+                            ...activeMonths.map((m) => DropdownMenuItem(value: m, child: Text(_months[m]))),
+                          ],
+                          onChanged: (val) {
+                            if (val != null) setState(() => _selectedMonth = val);
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -3387,6 +3579,9 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
     final newMobile = _mobCtrl.text.trim();
     final newEmail = _emailCtrl.text.trim().toLowerCase();
 
+    final originalFirmName = widget.profile.firmName.isNotEmpty
+        ? widget.profile.firmName
+        : (widget.currentUser?.name ?? newFirmName);
     final originalMobile = widget.profile.mobile.isNotEmpty
         ? widget.profile.mobile
         : (widget.currentUser?.mobile ?? newMobile);
@@ -3421,6 +3616,7 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
         newEmail: newEmail,
         newName: newFirmName,
         address: newAddress,
+        oldName: originalFirmName,
       );
 
       await CloudSyncService.saveBrokerProfile(newMobile, updated.toJson());
@@ -3619,6 +3815,7 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
     final photoBytes = decodeBase64Image(_photoBase64);
 
     return Scaffold(
+      backgroundColor: const Color(0xFFF1F5F9),
       appBar: AppBar(
         title: const Text(
           'Broker Profile',
@@ -3740,6 +3937,144 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
                       ),
                     ],
                   ),
+                ),
+                const SizedBox(height: 12),
+                // Live Firestore Subscription Status for Broker
+                StreamBuilder<DocumentSnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('users')
+                      .doc(CloudSyncService.cleanMobileNumber(
+                          widget.brokerKey.isNotEmpty
+                              ? widget.brokerKey
+                              : widget.profile.mobile))
+                      .snapshots(),
+                  builder: (context, subSnap) {
+                    if (!subSnap.hasData ||
+                        subSnap.data == null ||
+                        !subSnap.data!.exists) {
+                      return const SizedBox.shrink();
+                    }
+                    final subData =
+                        subSnap.data!.data() as Map<String, dynamic>? ?? {};
+                    final renewalDate =
+                        CloudSyncService.parseRenewalDate(subData);
+                    final daysLeft =
+                        renewalDate?.difference(DateTime.now()).inDays;
+                    final plan = (subData['subscription_plan'] ??
+                            (subData['subscription'] is Map
+                                ? subData['subscription']['plan']
+                                : null) ??
+                            'Standard Broker Plan')
+                        .toString();
+                    final isLocked = subData['is_locked'] == true ||
+                        subData['subscription_due'] == true ||
+                        (daysLeft != null && daysLeft < 0);
+
+                    final dateStr = renewalDate != null
+                        ? '${renewalDate.day.toString().padLeft(2, '0')}-${renewalDate.month.toString().padLeft(2, '0')}-${renewalDate.year}'
+                        : 'Lifetime / Free';
+
+                    return Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isLocked
+                            ? const Color(0xFFFEF2F2)
+                            : (daysLeft != null && daysLeft <= 7)
+                                ? const Color(0xFFFFFBEB)
+                                : const Color(0xFFF0FDF4),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: isLocked
+                              ? Colors.red.shade300
+                              : (daysLeft != null && daysLeft <= 7)
+                                  ? Colors.amber.shade400
+                                  : const Color(0xFF10B981),
+                          width: 1.2,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            isLocked
+                                ? Icons.lock_outline_rounded
+                                : (daysLeft != null && daysLeft <= 7)
+                                    ? Icons.notification_important_rounded
+                                    : Icons.verified_user_rounded,
+                            color: isLocked
+                                ? Colors.red.shade700
+                                : (daysLeft != null && daysLeft <= 7)
+                                    ? Colors.amber.shade800
+                                    : const Color(0xFF0F766E),
+                            size: 26,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Text(
+                                      isLocked
+                                          ? 'Subscription Due'
+                                          : (daysLeft != null && daysLeft <= 7)
+                                              ? 'Renew Soon'
+                                              : 'Active Plan',
+                                      style: TextStyle(
+                                        color: isLocked
+                                            ? Colors.red.shade900
+                                            : (daysLeft != null &&
+                                                    daysLeft <= 7)
+                                                ? Colors.amber.shade900
+                                                : const Color(0xFF0F766E),
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 1.5),
+                                      decoration: BoxDecoration(
+                                        color: isLocked
+                                            ? Colors.red
+                                            : const Color(0xFF0F766E),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        plan,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 9.5,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  renewalDate != null
+                                      ? 'Renewal Date: $dateStr (${daysLeft != null ? (daysLeft < 0 ? "Expired ${-daysLeft} days ago" : (daysLeft == 0 ? "Today" : "$daysLeft days left")) : ""})'
+                                      : 'Active Account • Support: 9983325558',
+                                  style: TextStyle(
+                                    color: (daysLeft != null && daysLeft <= 7)
+                                        ? Colors.red.shade800
+                                        : Colors.black87,
+                                    fontSize: 11.5,
+                                    fontWeight:
+                                        (daysLeft != null && daysLeft <= 7)
+                                            ? FontWeight.bold
+                                            : FontWeight.normal,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
                 const SizedBox(height: 16),
                 Card(
@@ -3960,32 +4295,204 @@ class _BrokerProfileScreenState extends State<BrokerProfileScreen> {
                 const SizedBox(height: 16),
                 Card(
                   elevation: 2,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   child: Padding(
                     padding: const EdgeInsets.all(16),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          'Custom WhatsApp Message Template (व्हाट्सएप टेम्पलेट)',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 15,
-                            color: Color(0xFF0F766E),
-                          ),
+                        const Row(
+                          children: [
+                            Icon(Icons.message_rounded, color: Color(0xFF25D366), size: 22),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'WhatsApp Sauda Slip Format (व्हाट्सएप सौदा पर्ची फॉर्मेट बनाएं)',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15,
+                                  color: Color(0xFF0F766E),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 4),
+                        const SizedBox(height: 6),
                         const Text(
-                          'Tags: {appName}, {partyName}, {roleText}, {dateStr}, {jins}, {bags}, {rate}, {oppParty}, {brokerFirmName}, {brokerMobile}',
-                          style: TextStyle(fontSize: 11, color: Colors.black54),
+                          'सौदा पर्ची का फॉर्मेट कस्टमाइज़ करें। नीचे दिए रेडीमेड टेम्पलेट चुनें या टैग्स जोड़कर अपनी मंडी के अनुसार संदेश तैयार करें:',
+                          style: TextStyle(fontSize: 11.5, color: Colors.black54),
                         ),
-                        const Divider(),
-                        const SizedBox(height: 8),
+                        const Divider(height: 18),
+
+                        // Ready preset buttons
+                        const Text(
+                          'रेडीमेड फॉर्मेट चुनें (Click to load preset):',
+                          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.black87),
+                        ),
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (int i = 0; i < WhatsAppService.templates.length; i++)
+                              ActionChip(
+                                avatar: const Icon(Icons.format_quote_rounded, size: 13, color: Color(0xFF0F766E)),
+                                label: Text(WhatsAppService.templates[i].title, style: const TextStyle(fontSize: 11)),
+                                onPressed: () {
+                                  setState(() {
+                                    _whatsappTemplateCtrl.text = WhatsAppService.templates[i].rawTemplate;
+                                  });
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('${WhatsAppService.templates[i].title} लोड कर दिया गया!'),
+                                      duration: const Duration(seconds: 2),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ActionChip(
+                              avatar: const Icon(Icons.refresh, size: 13, color: Colors.red),
+                              label: const Text('डिफ़ॉल्ट रीसेट', style: TextStyle(fontSize: 11, color: Colors.red)),
+                              onPressed: () {
+                                setState(() {
+                                  _whatsappTemplateCtrl.text = WhatsAppService.getDefaultTemplate();
+                                });
+                              },
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Clickable Tag Chips
+                        const Text(
+                          'टैग्स पर क्लिक करके संदेश में जोड़ें (Click tag to insert):',
+                          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.black87),
+                        ),
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            '{saudaId}',
+                            '{dateStr}',
+                            '{jins}',
+                            '{bags}',
+                            '{rate}',
+                            '{buyerName}',
+                            '{sellerName}',
+                            '{partyName}',
+                            '{oppParty}',
+                            '{brokerFirmName}',
+                            '{brokerMobile}',
+                            '{brokerageText}',
+                          ].map((tag) => InkWell(
+                            onTap: () {
+                              final text = _whatsappTemplateCtrl.text;
+                              final sel = _whatsappTemplateCtrl.selection;
+                              if (sel.isValid && sel.start >= 0) {
+                                final newText = text.replaceRange(sel.start, sel.end, tag);
+                                _whatsappTemplateCtrl.value = TextEditingValue(
+                                  text: newText,
+                                  selection: TextSelection.collapsed(offset: sel.start + tag.length),
+                                );
+                              } else {
+                                _whatsappTemplateCtrl.text = text + tag;
+                              }
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF0F766E).withValues(alpha: 0.08),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: const Color(0xFF0F766E).withValues(alpha: 0.2)),
+                              ),
+                              child: Text(tag, style: const TextStyle(fontSize: 11, fontFamily: 'monospace', color: Color(0xFF0F766E), fontWeight: FontWeight.bold)),
+                            ),
+                          )).toList(),
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Editable Template Box
                         TextField(
                           controller: _whatsappTemplateCtrl,
-                          maxLines: 7,
+                          maxLines: 8,
+                          style: const TextStyle(fontSize: 12.5, fontFamily: 'monospace'),
                           decoration: const InputDecoration(
-                            labelText: 'WhatsApp Template Content',
+                            labelText: 'WhatsApp Template Content (सौदा पर्ची संदेश)',
                             border: OutlineInputBorder(),
+                            alignLabelWithHint: true,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+
+                        // Preview Slip Button
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFF0F766E),
+                            ),
+                            icon: const Icon(Icons.preview_rounded, size: 16),
+                            label: const Text('प्रीव्यू देखें (Preview Slip)', style: TextStyle(fontSize: 12)),
+                            onPressed: () {
+                              final previewMsg = WhatsAppService.formatSaudaMessage(
+                                template: _whatsappTemplateCtrl.text.isNotEmpty
+                                    ? _whatsappTemplateCtrl.text
+                                    : WhatsAppService.getDefaultTemplate(),
+                                sauda: MandiSaudaModel(
+                                  id: 'ABC123',
+                                  date: DateTime.now(),
+                                  buyer: 'Shree Krishna Traders',
+                                  buyerMobile: '9876543210',
+                                  seller: 'Ramesh Patel (Kisan)',
+                                  sellerMobile: '9123456780',
+                                  jins: 'SOYABEAN (सोयाबीन)',
+                                  bags: 100,
+                                  rate: 4850,
+                                  buyerDalaliPerBag: 5,
+                                  sellerDalaliPerBag: 5,
+                                  buyerConfirmed: true,
+                                  sellerConfirmed: true,
+                                  brokerFirmName: _firmCtrl.text.isNotEmpty ? _firmCtrl.text : 'MANDI BROKER',
+                                  brokerMobile: _mobCtrl.text.isNotEmpty ? _mobCtrl.text : '9893000000',
+                                ),
+                                role: 'BUYER',
+                                brokerFirmName: _firmCtrl.text.isNotEmpty ? _firmCtrl.text : 'MANDI BROKER',
+                                brokerMobile: _mobCtrl.text.isNotEmpty ? _mobCtrl.text : '9893000000',
+                              );
+
+                              showDialog(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Row(
+                                    children: [
+                                      Icon(Icons.chat_bubble_outline, color: Color(0xFF25D366)),
+                                      SizedBox(width: 8),
+                                      Text('WhatsApp Slip Preview', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                                    ],
+                                  ),
+                                  content: Container(
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFECE5DD),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: SingleChildScrollView(
+                                      child: Text(
+                                        previewMsg,
+                                        style: const TextStyle(fontSize: 12.5, color: Colors.black87),
+                                      ),
+                                    ),
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx),
+                                      child: const Text('CLOSE'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
                           ),
                         ),
                       ],
@@ -4350,6 +4857,10 @@ void showEditSaudaDialog(
   final bagsCtrl = TextEditingController(text: sauda.bags.toString());
   final rateCtrl = TextEditingController(text: sauda.rate.toString());
   final jinsCtrl = TextEditingController(text: sauda.jins);
+  final buyerNameCtrl = TextEditingController(text: sauda.buyer);
+  final buyerMobileCtrl = TextEditingController(text: sauda.buyerMobile);
+  final sellerNameCtrl = TextEditingController(text: sauda.seller);
+  final sellerMobileCtrl = TextEditingController(text: sauda.sellerMobile);
   final buyerDalaliCtrl = TextEditingController(
     text: sauda.buyerDalaliPerBag.toString(),
   );
@@ -4363,6 +4874,8 @@ void showEditSaudaDialog(
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setDialogState) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text(
           'Edit Sauda Details',
           style: TextStyle(fontWeight: FontWeight.bold),
@@ -4458,6 +4971,72 @@ void showEditSaudaDialog(
                   ),
                 ],
               ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: buyerNameCtrl,
+                      textCapitalization: TextCapitalization.characters,
+                      inputFormatters: [UpperCaseTextFormatter()],
+                      decoration: const InputDecoration(
+                        labelText: 'Buyer (क्रेता)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: buyerMobileCtrl,
+                      keyboardType: TextInputType.phone,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(10),
+                      ],
+                      decoration: const InputDecoration(
+                        labelText: 'Buyer Mobile',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: sellerNameCtrl,
+                      textCapitalization: TextCapitalization.characters,
+                      inputFormatters: [UpperCaseTextFormatter()],
+                      decoration: const InputDecoration(
+                        labelText: 'Seller (विक्रेता)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: sellerMobileCtrl,
+                      keyboardType: TextInputType.phone,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(10),
+                      ],
+                      decoration: const InputDecoration(
+                        labelText: 'Seller Mobile',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -4485,13 +5064,30 @@ void showEditSaudaDialog(
                 return;
               }
 
+              final bMob = buyerMobileCtrl.text.trim();
+              final sMob = sellerMobileCtrl.text.trim();
+              if ((bMob.isNotEmpty && bMob.length != 10) ||
+                  (sMob.isNotEmpty && sMob.length != 10)) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Mobile numbers must be 10 digits'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+                return;
+              }
+
               final updated = MandiSaudaModel(
                 id: sauda.id,
                 date: selectedDate,
-                buyer: sauda.buyer,
-                buyerMobile: sauda.buyerMobile,
-                seller: sauda.seller,
-                sellerMobile: sauda.sellerMobile,
+                buyer: buyerNameCtrl.text.trim().toUpperCase().isNotEmpty
+                    ? buyerNameCtrl.text.trim().toUpperCase()
+                    : sauda.buyer,
+                buyerMobile: bMob.isNotEmpty ? bMob : sauda.buyerMobile,
+                seller: sellerNameCtrl.text.trim().toUpperCase().isNotEmpty
+                    ? sellerNameCtrl.text.trim().toUpperCase()
+                    : sauda.seller,
+                sellerMobile: sMob.isNotEmpty ? sMob : sauda.sellerMobile,
                 jins: jinsCtrl.text.trim().toUpperCase(),
                 bags: bags,
                 rate: rate,
@@ -4526,6 +5122,8 @@ void showDeleteSaudaDialog(
   showDialog(
     context: context,
     builder: (ctx) => AlertDialog(
+      backgroundColor: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       title: const Text('Delete Sauda?'),
       content: const Text(
         'Are you sure you want to delete this transaction from the ledger? Notifications will be sent to the Buyer and Seller.',

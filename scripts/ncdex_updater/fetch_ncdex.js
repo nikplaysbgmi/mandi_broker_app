@@ -1,5 +1,7 @@
 const admin = require('firebase-admin');
 const puppeteer = require('puppeteer');
+const fs = require('fs');
+const path = require('path');
 
 // Full list of agricultural commodities traded on NCDEX
 const COMMODITY_CONFIG = [
@@ -37,40 +39,60 @@ function isCurrentOrFutureExpiry(expiryStr) {
   return true;
 }
 
-async function run() {
-  console.log('🚀 [NCDEX Scraper] Starting live quote extraction...');
+function initFirebase() {
+  if (admin.apps.length > 0) return admin.firestore();
 
-  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-    console.error('❌ FATAL: FIREBASE_SERVICE_ACCOUNT missing!');
-    process.exit(1);
-  }
-
-  try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    if (admin.apps.length === 0) {
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
-      });
+  let serviceAccount;
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    try {
+      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    } catch (err) {
+      console.error('❌ Service Account parse error:', err.message);
+      process.exit(1);
     }
-  } catch (err) {
-    console.error('❌ Service Account parse error:', err.message);
-    process.exit(1);
+  } else {
+    try {
+      const keyPath = path.join(__dirname, 'serviceAccountKey.json');
+      if (fs.existsSync(keyPath)) {
+        serviceAccount = require(keyPath);
+        console.log('🔑 Loaded credentials from local serviceAccountKey.json');
+      } else {
+        console.error('❌ FATAL: FIREBASE_SERVICE_ACCOUNT environment variable and serviceAccountKey.json are both missing!');
+        process.exit(1);
+      }
+    } catch (e) {
+      console.error('❌ Error reading local serviceAccountKey.json:', e.message);
+      process.exit(1);
+    }
   }
 
-  const db = admin.firestore();
-
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--window-size=1366,768'
-    ]
-  });
-
   try {
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+    return admin.firestore();
+  } catch (err) {
+    console.error('❌ Firebase Admin init error:', err.message);
+    process.exit(1);
+  }
+}
+
+async function scrapeOnce(db) {
+  console.log(`\n⏰ [${new Date().toLocaleTimeString('en-IN')}] Launching browser for NCDEX live quotes...`);
+
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--window-size=1366,768'
+      ]
+    });
+
     const page = await browser.newPage();
     await page.setViewport({ width: 1366, height: 768 });
     await page.setUserAgent(
@@ -103,10 +125,8 @@ async function run() {
       const rawProduct = (cells[0] || '').toUpperCase();
       const expiry = cells[1] || '';
 
-      // Skip past months
       if (!isCurrentOrFutureExpiry(expiry)) continue;
 
-      // Find matched target commodity
       const matched = COMMODITY_CONFIG.find(item =>
         item.patterns.some(pat => rawProduct.includes(pat))
       );
@@ -116,21 +136,16 @@ async function run() {
       let ltp = '0';
       let change = '0';
 
-      // Parse NCDEX columns: [Product, Expiry, Open, Low LTP High, Close, Change, ...]
       if (cells.length >= 6) {
         const lowLtpHigher = (cells[3] || '').replace(/,/g, '').split(/\s+/);
         if (lowLtpHigher.length >= 2) {
-          // In 'Low LTP High', LTP is the middle element
           ltp = lowLtpHigher.length === 3 ? lowLtpHigher[1] : lowLtpHigher[0];
         } else {
           ltp = (cells[3] || cells[2] || '0').replace(/,/g, '');
         }
-
-        // Change column is usually cell 5
         change = (cells[5] || '0').replace(/,/g, '');
       }
 
-      // Cleanup numbers
       const numLtp = parseFloat(ltp);
       const numChange = parseFloat(change);
 
@@ -151,21 +166,18 @@ async function run() {
         isPositive: !isNaN(numChange) && numChange >= 0
       };
 
-      // Store near-month contract (first occurrence or one with a valid price)
       if (!commodityMap.has(matched.display) ||
          (cleanPrice !== '0' && commodityMap.get(matched.display).lastPrice === '0')) {
         commodityMap.set(matched.display, entry);
       }
     }
 
-    // Build the ordered list preserving configured commodity order
     const finalList = COMMODITY_CONFIG
       .filter(item => commodityMap.has(item.display))
       .map(item => commodityMap.get(item.display));
 
-    console.log(`✅ Formatted ${finalList.length} active commodities for MarketWatch.`);
+    console.log(`✅ Formatted ${finalList.length} active commodities.`);
 
-    // Write to Firestore
     const now = admin.firestore.FieldValue.serverTimestamp();
     await db.collection('market_watch').doc('live_summary').set({
       commodities: finalList,
@@ -177,12 +189,42 @@ async function run() {
     }, { merge: true });
 
     console.log('🎉 Successfully saved full commodity list to Firestore!');
+    return true;
   } catch (err) {
-    console.error('❌ Scraper runtime error:', err.message);
-    process.exit(1);
+    console.error('⚠️ Scrape cycle error (will retry next interval):', err.message);
+    return false;
   } finally {
-    await browser.close();
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (_) {}
+    }
   }
 }
 
-run();
+async function main() {
+  console.log('🚀 [NCDEX Continuous Loop Scraper] Starting service...');
+  const db = initFirebase();
+
+  // Loop configuration: 8 cycles spaced 3 minutes apart = ~25 minutes per GitHub Actions run
+  const TOTAL_CYCLES = 8;
+  const DELAY_MINUTES = 3;
+
+  for (let cycle = 1; cycle <= TOTAL_CYCLES; cycle++) {
+    console.log(`\n========================================`);
+    console.log(`🔄 [Cycle ${cycle}/${TOTAL_CYCLES}] Live NCDEX Scrape`);
+    console.log(`========================================`);
+
+    await scrapeOnce(db);
+
+    if (cycle < TOTAL_CYCLES) {
+      console.log(`⏳ Sleeping ${DELAY_MINUTES} minutes before next automatic scrape...`);
+      await new Promise(r => setTimeout(r, DELAY_MINUTES * 60 * 1000));
+    }
+  }
+
+  console.log('\n🏁 [NCDEX Continuous Loop] Completed all cycles for this run.');
+  process.exit(0);
+}
+
+main();
