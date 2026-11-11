@@ -307,6 +307,43 @@ class _AnalyzerWatchListState extends State<AnalyzerWatchList> {
     });
   }
 
+  static DateTime? _parseContractExpiry(String expiryStr) {
+    if (expiryStr.isEmpty) return null;
+    final clean = expiryStr.trim().toUpperCase();
+    const monthMap = {
+      'JAN': 1,
+      'FEB': 2,
+      'MAR': 3,
+      'APR': 4,
+      'MAY': 5,
+      'JUN': 6,
+      'JUL': 7,
+      'AUG': 8,
+      'SEP': 9,
+      'OCT': 10,
+      'NOV': 11,
+      'DEC': 12
+    };
+    final regExp = RegExp(
+      r'(?:(\d{1,2})[\s\-_]+)?(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*(?:[\s\-_]+(\d{2,4}))?',
+    );
+    final match = regExp.firstMatch(clean);
+    if (match != null) {
+      final day = int.tryParse(match.group(1) ?? '') ?? 20;
+      final month = monthMap[match.group(2) ?? ''] ?? 1;
+      int year = int.tryParse(match.group(3) ?? '') ?? DateTime.now().year;
+      if (year < 100) year += 2000;
+      return DateTime(year, month, day, 23, 59, 59);
+    }
+    return null;
+  }
+
+  static bool _isContractExpired(String expiryStr) {
+    final exp = _parseContractExpiry(expiryStr);
+    if (exp == null) return false;
+    return DateTime.now().isAfter(exp);
+  }
+
   /// Real-Time Live Market Bhav & Dynamic Prediction Matcher
   List<Map<String, dynamic>> _mergeLivePredictions({
     required dynamic liveSnapData,
@@ -336,9 +373,14 @@ class _AnalyzerWatchListState extends State<AnalyzerWatchList> {
               .toList() ??
           [def['code'].toString().toUpperCase()];
 
-      // 1. Try matching with NCDEX Live Feed
+      // 1. Try matching with active (non-expired) NCDEX Live Feed
       Map<String, dynamic>? liveMatch;
       for (final rate in liveRates) {
+        final String exp =
+            (rate['expiry'] ?? rate['contract'] ?? '').toString();
+        // Automatically skip contracts that stopped on the 20th
+        if (_isContractExpired(exp)) continue;
+
         final String sym =
             (rate['symbol'] ?? rate['name'] ?? rate['commodity'] ?? '')
                 .toString()

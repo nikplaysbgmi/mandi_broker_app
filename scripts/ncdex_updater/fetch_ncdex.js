@@ -24,23 +24,45 @@ function isCurrentOrFutureExpiry(expiryStr) {
   };
 
   const now = new Date();
-  const currentYear = now.getFullYear();
-  const currentMonth = now.getMonth();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  const match = clean.match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*[\s\-_]*(\d{2,4})/i);
+  const match = clean.match(/(?:(\d{1,2})[\s\-_]+)?(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*(?:[\s\-_]+(\d{2,4}))?/i);
   if (match) {
-    const m = monthMap[match[1].toUpperCase()];
-    let y = parseInt(match[2], 10);
+    const day = match[1] ? parseInt(match[1], 10) : 20; // Default expiry day is 20th
+    const m = monthMap[match[2].toUpperCase()] ?? 0;
+    let y = match[3] ? parseInt(match[3], 10) : now.getFullYear();
     if (y < 100) y += 2000;
-    if (y > currentYear) return true;
-    if (y === currentYear && m >= currentMonth) return true;
-    return false;
+
+    // Contract expires at 23:59:59 on the expiry day (e.g. 20th)
+    const expiryDate = new Date(y, m, day, 23, 59, 59);
+    return expiryDate >= todayStart;
   }
   return true;
 }
 
+function getExpirySortKey(expiryStr) {
+  if (!expiryStr || typeof expiryStr !== 'string') return 99999999;
+  const clean = expiryStr.trim().toUpperCase();
+  const monthMap = {
+    'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+    'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12
+  };
+  const match = clean.match(/(?:(\d{1,2})[\s\-_]+)?(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*(?:[\s\-_]+(\d{2,4}))?/i);
+  if (match) {
+    const day = match[1] ? parseInt(match[1], 10) : 1;
+    const month = monthMap[match[2].toUpperCase()] || 1;
+    let year = match[3] ? parseInt(match[3], 10) : new Date().getFullYear();
+    if (year < 100) year += 2000;
+    return year * 10000 + month * 100 + day;
+  }
+  return 99999999;
+}
+
 function initFirebase() {
-  if (admin.apps.length > 0) return admin.firestore();
+  const apps = admin.apps || (admin.getApps ? admin.getApps() : []);
+  if (apps.length > 0) {
+    return (admin.firestore ? admin.firestore() : require('firebase-admin/firestore').getFirestore());
+  }
 
   let serviceAccount;
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
@@ -67,10 +89,11 @@ function initFirebase() {
   }
 
   try {
+    const certFn = admin.cert || (admin.credential && admin.credential.cert);
     admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
+      credential: certFn(serviceAccount)
     });
-    return admin.firestore();
+    return (admin.firestore ? admin.firestore() : require('firebase-admin/firestore').getFirestore());
   } catch (err) {
     console.error('❌ Firebase Admin init error:', err.message);
     process.exit(1);
@@ -119,11 +142,12 @@ async function scrapeOnce(db) {
 
     console.log(`📊 Total table rows extracted: ${tableData.length}`);
 
-    const commodityMap = new Map();
+    // Map: commodity display -> Map of (expiry -> entry)
+    const commodityContractsMap = new Map();
 
     for (const cells of tableData) {
       const rawProduct = (cells[0] || '').toUpperCase();
-      const expiry = cells[1] || '';
+      const expiry = (cells[1] || '').trim();
 
       if (!isCurrentOrFutureExpiry(expiry)) continue;
 
@@ -166,19 +190,38 @@ async function scrapeOnce(db) {
         isPositive: !isNaN(numChange) && numChange >= 0
       };
 
-      if (!commodityMap.has(matched.display) ||
-         (cleanPrice !== '0' && commodityMap.get(matched.display).lastPrice === '0')) {
-        commodityMap.set(matched.display, entry);
+      if (!commodityContractsMap.has(matched.display)) {
+        commodityContractsMap.set(matched.display, new Map());
+      }
+      const expMap = commodityContractsMap.get(matched.display);
+      if (!expMap.has(expiry) || (cleanPrice !== '0' && expMap.get(expiry).lastPrice === '0')) {
+        expMap.set(expiry, entry);
       }
     }
 
-    const finalList = COMMODITY_CONFIG
-      .filter(item => commodityMap.has(item.display))
-      .map(item => commodityMap.get(item.display));
+    // Capture both near month (e.g. November) and next month (+1 month, e.g. December) contracts
+    const finalList = [];
+    for (const item of COMMODITY_CONFIG) {
+      if (!commodityContractsMap.has(item.display)) continue;
+      const contracts = Array.from(commodityContractsMap.get(item.display).values());
+      // Sort chronologically: near month first, next month second
+      contracts.sort((a, b) => getExpirySortKey(a.expiry) - getExpirySortKey(b.expiry));
 
-    console.log(`✅ Formatted ${finalList.length} active commodities.`);
+      // Keep up to 2 active future contracts (near month + 1 month forward e.g. Nov and Dec)
+      const topContracts = contracts.slice(0, 2);
+      topContracts.forEach((c, idx) => {
+        c.monthIndex = idx;
+        c.monthType = idx === 0 ? 'NEAR' : 'NEXT';
+        finalList.push(c);
+      });
+    }
 
-    const now = admin.firestore.FieldValue.serverTimestamp();
+    console.log(`✅ Formatted ${finalList.length} active contracts.`);
+
+    const FieldValue = (admin.firestore && admin.firestore.FieldValue)
+      ? admin.firestore.FieldValue
+      : require('firebase-admin/firestore').FieldValue;
+    const now = FieldValue.serverTimestamp();
     await db.collection('market_watch').doc('live_summary').set({
       commodities: finalList,
       rates: finalList,

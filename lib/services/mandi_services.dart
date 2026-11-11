@@ -1006,7 +1006,7 @@ void showNotificationDialog(BuildContext context, String userMobile) {
 // 7. APP UPDATE SERVICE (FIRESTORE VERSION CHECK)
 // =============================================================
 class AppUpdateService {
-  static const String currentVersion = '1.0.14';
+  static const String currentVersion = '1.0.15';
 
   static Future<void> checkForUpdates(BuildContext context) async {
     try {

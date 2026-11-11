@@ -1050,18 +1050,18 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                                         .withValues(alpha: 0.35),
                                   ),
                                 ),
-                                child: const Row(
+                                child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(
+                                    const Icon(
                                       Icons.verified,
                                       size: 13,
                                       color: Color(0xFF10B981),
                                     ),
-                                    SizedBox(width: 5),
+                                    const SizedBox(width: 5),
                                     Text(
-                                      'Nik_jodhpur• 2026',
-                                      style: TextStyle(
+                                      'Nik_jodhpur• ${DateTime.now().year}',
+                                      style: const TextStyle(
                                         color: Color(0xFF10B981),
                                         fontSize: 10.5,
                                         fontWeight: FontWeight.w700,

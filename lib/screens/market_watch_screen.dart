@@ -267,7 +267,8 @@ class _MarketWatchScreenState extends State<MarketWatchScreen> {
             ),
             const Divider(color: Color(0xFF2B2B2B), height: 1),
             ListTile(
-              leading: const Icon(Icons.visibility_rounded, color: Color(0xFF38BDF8)),
+              leading: const Icon(Icons.visibility_rounded,
+                  color: Color(0xFF38BDF8)),
               title: const Text(
                 'लाइव व्यूअर्स संख्या (Live Count) सेट करें',
                 style:
@@ -664,26 +665,88 @@ class McxWatchList extends StatelessWidget {
 // =============================================================
 // TAB 2: NCDEX WATCHLIST
 // =============================================================
-class NcdexWatchList extends StatelessWidget {
+class NcdexWatchList extends StatefulWidget {
   final FirebaseFirestore db;
   const NcdexWatchList({super.key, required this.db});
 
+  @override
+  State<NcdexWatchList> createState() => _NcdexWatchListState();
+}
+
+class _NcdexWatchListState extends State<NcdexWatchList> {
+  int _selectedFilterIndex =
+      0; // 0: All (दोनों माह), 1: Near Month (चालू माह), 2: +1 Month (दिसंबर)
+
+  static const List<Map<String, dynamic>> _kAgriCommodities = [
+    {
+      'symbol': 'GUARSEED10',
+      'hindi': 'ग्वार सीड (Guar Seed)',
+      'patterns': ['GUARSEED', 'GUAR SEED'],
+    },
+    {
+      'symbol': 'GUARGUM5',
+      'hindi': 'ग्वार गम (Guar Gum)',
+      'patterns': ['GUARGUM', 'GUAR GUM'],
+    },
+    {
+      'symbol': 'JEERAUNJHA',
+      'hindi': 'जीरा ऊंझा (Jeera)',
+      'patterns': ['JEERA'],
+    },
+    {
+      'symbol': 'COKUDL',
+      'hindi': 'खल / कपास्या (Cokudl)',
+      'patterns': ['COKUDL', 'COTTON SEED', 'KAPAS KHAL'],
+    },
+    {
+      'symbol': 'TMCFGRNZM',
+      'hindi': 'हल्दी (Turmeric)',
+      'patterns': ['TURMERIC', 'TMCFGRNZM'],
+    },
+    {
+      'symbol': 'CASTOR',
+      'hindi': 'अरंडी (Castor Seed)',
+      'patterns': ['CASTOR'],
+    },
+    {
+      'symbol': 'CHANA',
+      'hindi': 'चना (Chana / Gram)',
+      'patterns': ['CHANA', 'GRAM'],
+    },
+  ];
+
+  static const List<String> _kMonthShort = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec'
+  ];
+
+  static const List<String> _kMonthHindi = [
+    'जनवरी',
+    'फ़रवरी',
+    'मार्च',
+    'अप्रैल',
+    'मई',
+    'जून',
+    'जुलाई',
+    'अगस्त',
+    'सितंबर',
+    'अक्टूबर',
+    'नवंबर',
+    'दिसंबर'
+  ];
+
   String _formatDate(DateTime dt) {
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec'
-    ];
-    return '${dt.day.toString().padLeft(2, '0')} ${months[dt.month - 1]} ${dt.year}';
+    return '${dt.day.toString().padLeft(2, '0')} ${_kMonthShort[dt.month - 1]} ${dt.year}';
   }
 
   String _formatTime(DateTime dt) {
@@ -693,10 +756,295 @@ class NcdexWatchList extends StatelessWidget {
     return '$hour:$minute $period';
   }
 
+  String _getCommodityHindiName(String symbol) {
+    final upper = symbol.toUpperCase();
+    for (final c in _kAgriCommodities) {
+      final patterns = c['patterns'] as List<String>;
+      if (patterns.any((p) => upper.contains(p)) ||
+          upper.contains(c['symbol'] as String)) {
+        return c['hindi'] as String;
+      }
+    }
+    return 'कृषि जिंस वायदा';
+  }
+
+  DateTime? _parseContractExpiry(String expiryStr) {
+    if (expiryStr.isEmpty) return null;
+    final clean = expiryStr.trim().toUpperCase();
+    const monthMap = {
+      'JAN': 1,
+      'FEB': 2,
+      'MAR': 3,
+      'APR': 4,
+      'MAY': 5,
+      'JUN': 6,
+      'JUL': 7,
+      'AUG': 8,
+      'SEP': 9,
+      'OCT': 10,
+      'NOV': 11,
+      'DEC': 12
+    };
+    final regExp = RegExp(
+      r'(?:(\d{1,2})[\s\-_]+)?(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*(?:[\s\-_]+(\d{2,4}))?',
+    );
+    final match = regExp.firstMatch(clean);
+    if (match != null) {
+      final day = int.tryParse(match.group(1) ?? '') ?? 20;
+      final month = monthMap[match.group(2) ?? ''] ?? 1;
+      int year = int.tryParse(match.group(3) ?? '') ?? DateTime.now().year;
+      if (year < 100) year += 2000;
+      return DateTime(year, month, day, 23, 59, 59);
+    }
+    return null;
+  }
+
+  bool _isContractExpired(String expiryStr) {
+    final exp = _parseContractExpiry(expiryStr);
+    if (exp == null) return false;
+    // When the contract stops on the 20th at 23:59:59, DateTime.now().isAfter(exp) becomes true!
+    return DateTime.now().isAfter(exp);
+  }
+
+  int _getExpirySortKey(String expiryStr) {
+    final exp = _parseContractExpiry(expiryStr);
+    if (exp != null) {
+      return exp.year * 10000 + exp.month * 100 + exp.day;
+    }
+    return 99999999;
+  }
+
+  List<Map<String, dynamic>> _generateDefaultContracts() {
+    final now = DateTime.now();
+    // If today is past the 20th of the month, the current month has stopped on the 20th!
+    final bool past20th = now.day > 20;
+
+    final int nearMonthNum = past20th ? (now.month % 12) + 1 : now.month;
+    final int nearYear =
+        (past20th && now.month == 12) ? now.year + 1 : now.year;
+    final int nearDay = (nearMonthNum == 12 || nearMonthNum == 2) ? 18 : 20;
+    final String nearMonthStr = _kMonthShort[nearMonthNum - 1].toUpperCase();
+    final String nearExpiry = '$nearDay $nearMonthStr $nearYear';
+
+    final int nextMonthNum = (nearMonthNum % 12) + 1;
+    final int nextYear = (nearMonthNum == 12) ? nearYear + 1 : nearYear;
+    final int nextDay = (nextMonthNum == 12 || nextMonthNum == 2) ? 18 : 20;
+    final String nextMonthStr = _kMonthShort[nextMonthNum - 1].toUpperCase();
+    final String nextExpiry = '$nextDay $nextMonthStr $nextYear';
+
+    final List<Map<String, dynamic>> list = [];
+    final defaults = [
+      {
+        'symbol': 'GUARSEED10',
+        'nearLtp': 8286,
+        'nearChg': '+2',
+        'nextLtp': 8431,
+        'nextChg': '+20'
+      },
+      {
+        'symbol': 'GUARGUM5',
+        'nearLtp': 16343,
+        'nearChg': '-64',
+        'nextLtp': 16697,
+        'nextChg': '-31'
+      },
+      {
+        'symbol': 'JEERAUNJHA',
+        'nearLtp': 28590,
+        'nearChg': '+130',
+        'nextLtp': 29125,
+        'nextChg': '+220'
+      },
+      {
+        'symbol': 'COKUDL',
+        'nearLtp': 3800,
+        'nearChg': '+95',
+        'nextLtp': 3790,
+        'nextChg': '+90'
+      },
+      {
+        'symbol': 'TMCFGRNZM',
+        'nearLtp': 28886,
+        'nearChg': '+472',
+        'nextLtp': 28602,
+        'nextChg': '+598'
+      },
+      {
+        'symbol': 'CASTOR',
+        'nearLtp': 8247,
+        'nearChg': '-4',
+        'nextLtp': 8440,
+        'nextChg': '+4'
+      },
+    ];
+
+    for (final d in defaults) {
+      final sym = d['symbol'] as String;
+      final nearLtp = d['nearLtp'] as int;
+      final nearChg = d['nearChg'] as String;
+      final nextLtp = d['nextLtp'] as int;
+      final nextChg = d['nextChg'] as String;
+
+      list.add({
+        'symbol': sym,
+        'name': sym,
+        'commodity': sym,
+        'expiry': nearExpiry,
+        'contract': nearExpiry,
+        'lastPrice': nearLtp.toString(),
+        'ltp': nearLtp.toString(),
+        'change': nearChg,
+        'isPositive': !nearChg.startsWith('-'),
+        'monthType': 'NEAR',
+        'monthIndex': 0,
+      });
+
+      list.add({
+        'symbol': sym,
+        'name': sym,
+        'commodity': sym,
+        'expiry': nextExpiry,
+        'contract': nextExpiry,
+        'lastPrice': nextLtp.toString(),
+        'ltp': nextLtp.toString(),
+        'change': nextChg,
+        'isPositive': !nextChg.startsWith('-'),
+        'monthType': 'NEXT',
+        'monthIndex': 1,
+      });
+    }
+    return list;
+  }
+
+  List<Map<String, dynamic>> _processAndPairContracts(
+      List<Map<String, dynamic>> rawRates) {
+    if (rawRates.isEmpty) {
+      return _generateDefaultContracts();
+    }
+
+    final List<Map<String, dynamic>> result = [];
+
+    for (final config in _kAgriCommodities) {
+      final String symbol = config['symbol'] as String;
+      final List<String> patterns = config['patterns'] as List<String>;
+
+      final List<Map<String, dynamic>> matched = [];
+      for (final item in rawRates) {
+        final String s =
+            (item['symbol'] ?? item['name'] ?? item['commodity'] ?? '')
+                .toString()
+                .toUpperCase();
+        if (patterns.any((p) => s.contains(p)) || s.contains(symbol)) {
+          final String exp =
+              (item['expiry'] ?? item['contract'] ?? '').toString();
+          // Automatic Expiry: filter out any contract that has stopped on the 20th
+          if (!_isContractExpired(exp)) {
+            matched.add(Map<String, dynamic>.from(item));
+          }
+        }
+      }
+
+      if (matched.isNotEmpty) {
+        matched.sort((a, b) {
+          final expA = (a['expiry'] ?? a['contract'] ?? '').toString();
+          final expB = (b['expiry'] ?? b['contract'] ?? '').toString();
+          return _getExpirySortKey(expA).compareTo(_getExpirySortKey(expB));
+        });
+
+        // 1st active contract: Near Month (चालू माह)
+        final near = matched[0];
+        near['monthType'] = 'NEAR';
+        near['monthIndex'] = 0;
+        result.add(near);
+
+        // 2nd active contract: Next Month (+1 Month)
+        if (matched.length > 1) {
+          final next = matched[1];
+          next['monthType'] = 'NEXT';
+          next['monthIndex'] = 1;
+          result.add(next);
+        }
+      }
+    }
+
+    // Append any unmatched remaining active non-expired items
+    for (final item in rawRates) {
+      final String s =
+          (item['symbol'] ?? item['name'] ?? item['commodity'] ?? '')
+              .toString()
+              .toUpperCase();
+      final bool alreadyHandled = _kAgriCommodities.any((c) {
+        final symbol = c['symbol'] as String;
+        final patterns = c['patterns'] as List<String>;
+        return patterns.any((p) => s.contains(p)) || s.contains(symbol);
+      });
+      if (!alreadyHandled) {
+        final String exp =
+            (item['expiry'] ?? item['contract'] ?? '').toString();
+        if (!_isContractExpired(exp)) {
+          result.add(Map<String, dynamic>.from(item));
+        }
+      }
+    }
+
+    if (result.isEmpty) {
+      return _generateDefaultContracts();
+    }
+
+    return result;
+  }
+
+  Widget _buildFilterChip(int index, String label, IconData icon,
+      {required Color accentColor}) {
+    final bool isSelected = _selectedFilterIndex == index;
+    return InkWell(
+      onTap: () {
+        setState(() {
+          _selectedFilterIndex = index;
+        });
+      },
+      borderRadius: BorderRadius.circular(20),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? accentColor.withValues(alpha: 0.18)
+              : const Color(0xFF1E1E1E),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isSelected ? accentColor : const Color(0xFF333333),
+            width: isSelected ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 13,
+              color: isSelected ? accentColor : Colors.white60,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: isSelected ? accentColor : Colors.white70,
+                fontSize: 12,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<dynamic>(
-      stream: db.collection('market_watch').doc('live_summary').snapshots(),
+      stream:
+          widget.db.collection('market_watch').doc('live_summary').snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(
@@ -718,12 +1066,75 @@ class NcdexWatchList extends StatelessWidget {
           docData['updatedAt'] ?? docData['last_updated'],
         );
 
-        final List<Map<String, dynamic>> rates = _safeExtractList(
+        final List<Map<String, dynamic>> rawRates = _safeExtractList(
           docData['commodities'] ?? docData['rates'],
         );
 
+        final List<Map<String, dynamic>> allContracts =
+            _processAndPairContracts(rawRates);
+
+        // Dynamically detect current active Near and Next months from contracts
+        String nearMonthNameEn = 'Near';
+        String nearMonthNameHi = 'चालू माह';
+        String nextMonthNameEn = 'Next';
+        String nextMonthNameHi = 'अगला माह';
+
+        for (final c in allContracts) {
+          if (c['monthType'] == 'NEAR') {
+            final exp = _parseContractExpiry(
+                (c['expiry'] ?? c['contract'] ?? '').toString());
+            if (exp != null) {
+              nearMonthNameEn = _kMonthShort[exp.month - 1];
+              nearMonthNameHi = _kMonthHindi[exp.month - 1];
+              break;
+            }
+          }
+        }
+
+        for (final c in allContracts) {
+          if (c['monthType'] == 'NEXT') {
+            final exp = _parseContractExpiry(
+                (c['expiry'] ?? c['contract'] ?? '').toString());
+            if (exp != null) {
+              nextMonthNameEn = _kMonthShort[exp.month - 1];
+              nextMonthNameHi = _kMonthHindi[exp.month - 1];
+              break;
+            }
+          }
+        }
+
+        // Fallback to calendar month if not extracted
+        if (nearMonthNameEn == 'Near') {
+          final now = DateTime.now();
+          final bool past20th = now.day > 20;
+          final int nearM = past20th ? (now.month % 12) + 1 : now.month;
+          final int nextM = (nearM % 12) + 1;
+          nearMonthNameEn = _kMonthShort[nearM - 1];
+          nearMonthNameHi = _kMonthHindi[nearM - 1];
+          nextMonthNameEn = _kMonthShort[nextM - 1];
+          nextMonthNameHi = _kMonthHindi[nextM - 1];
+        }
+
+        // Apply Month Filter
+        List<Map<String, dynamic>> displayedRates;
+        if (_selectedFilterIndex == 1) {
+          // Near Month (चालू माह)
+          displayedRates = allContracts
+              .where((c) => c['monthType'] == 'NEAR' || c['monthIndex'] == 0)
+              .toList();
+        } else if (_selectedFilterIndex == 2) {
+          // Next Month (+1 माह)
+          displayedRates = allContracts
+              .where((c) => c['monthType'] == 'NEXT' || c['monthIndex'] == 1)
+              .toList();
+        } else {
+          // All (दोनों माह)
+          displayedRates = allContracts;
+        }
+
         return Column(
           children: [
+            // Status bar
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: const BoxDecoration(
@@ -777,8 +1188,45 @@ class NcdexWatchList extends StatelessWidget {
                 ],
               ),
             ),
+
+            // Month Filter Selector Bar (All, Near Month, Next Month)
+            Container(
+              width: double.infinity,
+              color: const Color(0xFF0D0D0D),
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    _buildFilterChip(
+                      0,
+                      'सभी भाव (All)',
+                      Icons.dashboard_outlined,
+                      accentColor: const Color(0xFF00E676),
+                    ),
+                    const SizedBox(width: 8),
+                    _buildFilterChip(
+                      1,
+                      'चालू माह ($nearMonthNameEn)',
+                      Icons.calendar_today_outlined,
+                      accentColor: const Color(0xFF38BDF8),
+                    ),
+                    const SizedBox(width: 8),
+                    _buildFilterChip(
+                      2,
+                      '$nextMonthNameHi (+1M $nextMonthNameEn)',
+                      Icons.event_repeat_rounded,
+                      accentColor: const Color(0xFFF59E0B),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // Contracts List
             Expanded(
-              child: rates.isEmpty
+              child: displayedRates.isEmpty
                   ? const Center(
                       child: Text(
                         'No NCDEX contracts available',
@@ -786,14 +1234,14 @@ class NcdexWatchList extends StatelessWidget {
                       ),
                     )
                   : ListView.separated(
-                      itemCount: rates.length,
+                      itemCount: displayedRates.length,
                       separatorBuilder: (_, __) => const Divider(
                         color: Color(0xFF171717),
                         height: 1,
                         thickness: 1,
                       ),
                       itemBuilder: (context, index) {
-                        final Map<String, dynamic> item = rates[index];
+                        final Map<String, dynamic> item = displayedRates[index];
 
                         final String displayName = (item['symbol'] ??
                                 item['name'] ??
@@ -801,10 +1249,16 @@ class NcdexWatchList extends StatelessWidget {
                                 '')
                             .toString();
 
+                        final String hindiName =
+                            _getCommodityHindiName(displayName);
+
                         final String expiryDate =
                             (item['expiry'] ?? item['contract'] ?? 'NEAR')
                                 .toString()
                                 .trim();
+
+                        final bool isNextMonth = item['monthType'] == 'NEXT' ||
+                            item['monthIndex'] == 1;
 
                         final String rawPrice =
                             (item['lastPrice'] ?? item['ltp'] ?? '0')
@@ -834,42 +1288,115 @@ class NcdexWatchList extends StatelessWidget {
                         return Container(
                           color: Colors.black,
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 15),
+                              horizontal: 16, vertical: 13),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             crossAxisAlignment: CrossAxisAlignment.center,
                             children: [
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: [
-                                  Text(
-                                    displayName,
-                                    style: const TextStyle(
-                                      color: Color(0xFF38BDF8),
-                                      fontWeight: FontWeight.w900,
-                                      fontSize: 18,
-                                      letterSpacing: 0.4,
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.center,
+                                      children: [
+                                        Text(
+                                          displayName,
+                                          style: const TextStyle(
+                                            color: Color(0xFF38BDF8),
+                                            fontWeight: FontWeight.w900,
+                                            fontSize: 17,
+                                            letterSpacing: 0.3,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: isNextMonth
+                                                ? const Color(0xFFF59E0B)
+                                                    .withValues(alpha: 0.15)
+                                                : const Color(0xFF0284C7)
+                                                    .withValues(alpha: 0.12),
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                            border: Border.all(
+                                              color: isNextMonth
+                                                  ? const Color(0xFFF59E0B)
+                                                      .withValues(alpha: 0.6)
+                                                  : const Color(0xFF38BDF8)
+                                                      .withValues(alpha: 0.35),
+                                              width: 1,
+                                            ),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                isNextMonth
+                                                    ? Icons.event_repeat_rounded
+                                                    : Icons
+                                                        .calendar_today_outlined,
+                                                size: 10,
+                                                color: isNextMonth
+                                                    ? const Color(0xFFFBBF24)
+                                                    : const Color(0xFF38BDF8),
+                                              ),
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                expiryDate,
+                                                style: TextStyle(
+                                                  color: isNextMonth
+                                                      ? const Color(0xFFFBBF24)
+                                                      : const Color(0xFF38BDF8),
+                                                  fontSize: 10.5,
+                                                  fontWeight: FontWeight.bold,
+                                                  letterSpacing: 0.2,
+                                                ),
+                                              ),
+                                              if (isNextMonth) ...[
+                                                const SizedBox(width: 4),
+                                                Container(
+                                                  padding: const EdgeInsets
+                                                      .symmetric(
+                                                      horizontal: 3,
+                                                      vertical: 0.5),
+                                                  decoration: BoxDecoration(
+                                                    color:
+                                                        const Color(0xFFF59E0B),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            2),
+                                                  ),
+                                                  child: const Text(
+                                                    '+1M',
+                                                    style: TextStyle(
+                                                      color: Colors.black,
+                                                      fontSize: 8,
+                                                      fontWeight:
+                                                          FontWeight.w900,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        ),
+                                      ],
                                     ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF262626),
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                    child: Text(
-                                      expiryDate,
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      hindiName,
                                       style: const TextStyle(
                                         color: Color(0xFF9E9E9E),
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.bold,
-                                        letterSpacing: 0.3,
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w500,
                                       ),
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                               Column(
                                 crossAxisAlignment: CrossAxisAlignment.end,
@@ -885,14 +1412,30 @@ class NcdexWatchList extends StatelessWidget {
                                     ),
                                   ),
                                   const SizedBox(height: 2),
-                                  Text(
-                                    changeText,
-                                    style: TextStyle(
-                                      color: changeColor,
-                                      fontSize: 13.5,
-                                      fontWeight: FontWeight.bold,
-                                      letterSpacing: 0.2,
-                                    ),
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        changeText,
+                                        style: TextStyle(
+                                          color: changeColor,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                          letterSpacing: 0.2,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 5),
+                                      Text(
+                                        isNextMonth
+                                            ? '$nextMonthNameHi वायदा'
+                                            : '$nearMonthNameHi वायदा',
+                                        style: const TextStyle(
+                                          color: Colors.white38,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
@@ -1016,7 +1559,8 @@ class LocalMandiWatchList extends StatelessWidget {
             if (c == name ||
                 (name.contains('ग्वार सीड') && c == 'ग्वार सीड') ||
                 (name.contains('ग्वार गम') && c == 'ग्वार गम') ||
-                (name.toLowerCase().contains('guar seed') && c == 'ग्वार सीड') ||
+                (name.toLowerCase().contains('guar seed') &&
+                    c == 'ग्वार सीड') ||
                 (name.toLowerCase().contains('guar gum') && c == 'ग्वार गम') ||
                 (name.contains(c) || c.contains(name))) {
               return i;
@@ -1028,7 +1572,8 @@ class LocalMandiWatchList extends StatelessWidget {
         rates.sort((a, b) {
           final nameA = (a['name'] ?? '').toString();
           final nameB = (b['name'] ?? '').toString();
-          return getCommodityPriority(nameA).compareTo(getCommodityPriority(nameB));
+          return getCommodityPriority(nameA)
+              .compareTo(getCommodityPriority(nameB));
         });
 
         return Column(

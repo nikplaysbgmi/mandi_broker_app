@@ -61,3 +61,4 @@ repomix-output.xml
  
 .dart_cache/
 scratch/
+.firebase/
